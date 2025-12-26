@@ -379,6 +379,10 @@ class Env : public Customizable {
   virtual Status RenameFile(const std::string& src,
                             const std::string& target) = 0;
 
+  virtual void MoveFileToNewLevel(const std::string& filename, int new_level) {
+    
+  }
+
   // Hard Link file src to target.
   virtual Status LinkFile(const std::string& /*src*/,
                           const std::string& /*target*/) {
@@ -1148,6 +1152,30 @@ class WritableFile {
     write_hint_ = hint;
   }
 
+  virtual void SetLevel(int level=-1) {
+    
+  }
+
+  virtual void UpdateInternalKeys(const Slice& key) {
+    
+  }
+
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+  
+  }
+
+  virtual void UpdateMetadata(const TableProperties& table_properties) {
+    
+  }
+
+  virtual void UpdateMetadata(const FileMetaData* meta) {
+
+  }
+
+  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+
+  }
+
   virtual Env::WriteLifeTimeHint GetWriteLifeTimeHint() { return write_hint_; }
   /*
    * Get the size of valid data in the file.
@@ -1673,6 +1701,10 @@ class EnvWrapper : public Env {
     return target_.env->RenameFile(s, t);
   }
 
+  void MoveFileToNewLevel(const std::string& filename, int new_level) {
+    target_.env->MoveFileToNewLevel(filename, new_level);
+  }
+
   Status LinkFile(const std::string& s, const std::string& t) override {
     return target_.env->LinkFile(s, t);
   }
@@ -1937,6 +1969,30 @@ class WritableFileWrapper : public WritableFile {
 
   void SetWriteLifeTimeHint(Env::WriteLifeTimeHint hint) override {
     target_->SetWriteLifeTimeHint(hint);
+  }
+
+  virtual void SetLevel(int level=-1) {
+    target_->SetLevel(level);
+  }
+
+  virtual void UpdateInternalKeys(const Slice& key) {
+    target_->UpdateInternalKeys(key);
+  }
+
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+    target_->UpdateInternalKeysRange(start, end, icmp);
+  }
+
+  virtual void UpdateMetadata(const TableProperties& table_properties) {
+    target_->UpdateMetadata(table_properties);
+  }
+
+  virtual void UpdateMetadata(const FileMetaData* meta) {
+    target_->UpdateMetadata(meta);
+  }
+
+  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+    target_->SetInternalComparator(icmp);
   }
 
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() override {

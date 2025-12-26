@@ -4083,6 +4083,13 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       }
       for (size_t i = 0; i < c->num_input_files(l); i++) {
         FileMetaData* f = c->input(l, i);
+
+        const std::string filename =
+        TableFileName(c->immutable_options().cf_paths,
+        f->fd.GetNumber(), f->fd.GetPathId());
+        // immutable_db_options().fs->MoveFileToNewLevel(filename, c->output_level());
+        env_->GetFileSystem()->MoveFileToNewLevel(filename, c->output_level());
+
         c->edit()->DeleteFile(c->level(l), f->fd.GetNumber());
         c->edit()->AddFile(
             c->output_level(), f->fd.GetNumber(), f->fd.GetPathId(),

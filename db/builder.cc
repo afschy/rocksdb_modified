@@ -168,6 +168,8 @@ Status BuildTable(
       // Subsequent attempts to override the hint via SetWriteLifeTimeHint
       // with the very same value will be ignored by the fs.
       file->SetWriteLifeTimeHint(fo_copy.write_hint);
+      file->SetLevel(tboptions.level_at_creation);
+      file->SetInternalComparator(tboptions.internal_comparator);
       file_writer.reset(new WritableFileWriter(
           std::move(file), fname, file_options, ioptions.clock, io_tracer,
           ioptions.stats, Histograms::SST_WRITE_MICROS, ioptions.listeners,
@@ -261,6 +263,8 @@ Status BuildTable(
       if (!s.ok()) {
         break;
       }
+      file_writer->writable_file()->UpdateInternalKeys(key_after_flush);
+      file_writer->writable_file()->UpdateMetadata(builder->GetTableProperties());
 
       // TODO(noetzli): Update stats after flush, too.
       // TODO(hx235): Replace `rate_limiter_priority` with `io_activity` for

@@ -6,6 +6,8 @@
 #include "env/composite_env_wrapper.h"
 #include "rocksdb/utilities/options_type.h"
 #include "util/string_util.h"
+#include "db/dbformat.h"
+#include "db/version_edit.h"
 
 namespace ROCKSDB_NAMESPACE {
 namespace {
@@ -172,6 +174,30 @@ class CompositeWritableFileWrapper : public WritableFile {
 
   void SetWriteLifeTimeHint(Env::WriteLifeTimeHint hint) override {
     target_->SetWriteLifeTimeHint(hint);
+  }
+
+  virtual void SetLevel(int level=-1) {
+    target_->SetLevel(level);
+  }
+
+  virtual void UpdateInternalKeys(const Slice& key) {
+    target_->UpdateInternalKeys(key);
+  }
+
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+    target_->UpdateInternalKeysRange(start, end, icmp);
+  }
+
+  virtual void UpdateMetadata(const TableProperties& table_properties) {
+    target_->UpdateMetadata(table_properties);
+  }
+
+  virtual void UpdateMetadata(const FileMetaData* meta) {
+    target_->UpdateMetadata(meta);
+  }
+
+  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+    target_->SetInternalComparator(icmp);
   }
 
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() override {

@@ -436,6 +436,9 @@ Status CompactionOutputs::AddToOutput(
   s = current_output().meta.UpdateBoundaries(key, value, ikey.sequence,
                                              ikey.type);
 
+  file_writer_->writable_file()->UpdateInternalKeys(key);
+  file_writer_->writable_file()->UpdateMetadata(builder_->GetTableProperties());
+
   return s;
 }
 
@@ -726,6 +729,9 @@ Status CompactionOutputs::AddRangeDels(
     assert(icmp.Compare(tombstone_start, tombstone_end) <= 0);
     meta.UpdateBoundariesForRange(tombstone_start, tombstone_end,
                                   tombstone.seq_, icmp);
+    file_writer_->writable_file()->UpdateInternalKeysRange(tombstone_start, tombstone_end, icmp);
+    file_writer_->writable_file()->UpdateMetadata(builder_->GetTableProperties());
+                      
     if (!bottommost_level) {
       bool start_user_key_changed =
           last_tombstone_start_user_key.empty() ||

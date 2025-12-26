@@ -603,6 +603,11 @@ class FileSystem : public Customizable {
                               const IOOptions& options,
                               IODebugContext* dbg) = 0;
 
+  // Needed only for ZenFS
+  virtual void MoveFileToNewLevel(const std::string& filename, int new_level) {
+
+  }
+
   // Hard Link file src to target.
   virtual IOStatus LinkFile(const std::string& /*src*/,
                             const std::string& /*target*/,
@@ -1211,6 +1216,30 @@ class FSWritableFile {
     write_hint_ = hint;
   }
 
+  virtual void SetLevel(int level=-1) {
+    
+  }
+
+  virtual void UpdateInternalKeys(const Slice& key) {
+    
+  }
+
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+    
+  }
+
+  virtual void UpdateMetadata(const TableProperties& table_properties) {
+    
+  }
+
+  virtual void UpdateMetadata(const FileMetaData* meta) {
+
+  }
+
+  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+
+  }
+
   /*
    * If rate limiting is enabled, change the file-granularity priority used in
    * rate-limiting writes.
@@ -1594,6 +1623,10 @@ class FileSystemWrapper : public FileSystem {
     return target_->RenameFile(s, t, options, dbg);
   }
 
+  void MoveFileToNewLevel(const std::string& filename, int new_level) {
+    target_->MoveFileToNewLevel(filename, new_level);
+  }
+
   IOStatus LinkFile(const std::string& s, const std::string& t,
                     const IOOptions& options, IODebugContext* dbg) override {
     return target_->LinkFile(s, t, options, dbg);
@@ -1863,6 +1896,30 @@ class FSWritableFileWrapper : public FSWritableFile {
 
   void SetWriteLifeTimeHint(Env::WriteLifeTimeHint hint) override {
     target_->SetWriteLifeTimeHint(hint);
+  }
+
+  void SetLevel(int level=-1) {
+    target_->SetLevel(level);
+  }
+
+  virtual void UpdateInternalKeys(const Slice& key) {
+    target_->UpdateInternalKeys(key);
+  }
+
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+    target_->UpdateInternalKeysRange(start, end, icmp);
+  }
+
+  virtual void UpdateMetadata(const TableProperties& table_properties) {
+    target_->UpdateMetadata(table_properties);
+  }
+
+  virtual void UpdateMetadata(const FileMetaData* meta) {
+    target_->UpdateMetadata(meta);
+  }
+
+  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+    target_->SetInternalComparator(icmp);
   }
 
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() override {

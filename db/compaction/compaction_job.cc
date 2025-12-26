@@ -2343,6 +2343,8 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
   // Subsequent attempts to override the hint via SetWriteLifeTimeHint
   // with the very same value will be ignored by the fs.
   writable_file->SetWriteLifeTimeHint(fo_copy.write_hint);
+  writable_file->SetLevel(sub_compact->compaction->output_level());
+  writable_file->SetInternalComparator(sub_compact->compaction->column_family_data()->internal_comparator());
   FileTypeSet tmp_set = db_options_.checksum_handoff_file_types;
   writable_file->SetPreallocationBlockSize(static_cast<size_t>(
       sub_compact->compaction->OutputFilePreallocationSize()));

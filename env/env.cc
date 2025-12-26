@@ -293,6 +293,30 @@ class LegacyWritableFileWrapper : public FSWritableFile {
     target_->SetWriteLifeTimeHint(hint);
   }
 
+  virtual void SetLevel(int level=-1) {
+    target_->SetLevel(level);
+  }
+
+  virtual void UpdateInternalKeys(const Slice& key) {
+    target_->UpdateInternalKeys(key);
+  }
+
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+    target_->UpdateInternalKeysRange(start, end, icmp);
+  }
+
+  virtual void UpdateMetadata(const TableProperties& table_properties) {
+    target_->UpdateMetadata(table_properties);
+  }
+
+  virtual void UpdateMetadata(const FileMetaData* meta) {
+    target_->UpdateMetadata(meta);
+  }
+
+  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+    target_->SetInternalComparator(icmp);
+  }
+
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() override {
     return target_->GetWriteLifeTimeHint();
   }
@@ -521,6 +545,10 @@ class LegacyFileSystemWrapper : public FileSystem {
                       const IOOptions& /*options*/,
                       IODebugContext* /*dbg*/) override {
     return status_to_io_status(target_->RenameFile(s, t));
+  }
+
+  void MoveFileToNewLevel(const std::string& filename, int new_level) {
+    target_->MoveFileToNewLevel(filename, new_level);
   }
 
   IOStatus LinkFile(const std::string& s, const std::string& t,
