@@ -51,6 +51,9 @@ Status CompactionOutputs::Finish(
     meta->marked_for_compaction = builder_->NeedCompact();
     meta->user_defined_timestamps_persisted = static_cast<bool>(
         builder_->GetTableProperties().user_defined_timestamps_persisted);
+        
+    uint64_t average_value_size = compaction_->input_version()->storage_info()->GetAverageValueSize();
+    file_writer_->writable_file()->UpdateMetadata(meta, average_value_size);
   }
   current_output().finished = true;
   stats_.bytes_written += current_bytes;
@@ -436,7 +439,7 @@ Status CompactionOutputs::AddToOutput(
   s = current_output().meta.UpdateBoundaries(key, value, ikey.sequence,
                                              ikey.type);
 
-  file_writer_->writable_file()->UpdateInternalKeys(key);
+  file_writer_->writable_file()->UpdateInternalKeys(key, ikey.sequence);
   file_writer_->writable_file()->UpdateMetadata(builder_->GetTableProperties());
 
   return s;
@@ -729,7 +732,8 @@ Status CompactionOutputs::AddRangeDels(
     assert(icmp.Compare(tombstone_start, tombstone_end) <= 0);
     meta.UpdateBoundariesForRange(tombstone_start, tombstone_end,
                                   tombstone.seq_, icmp);
-    file_writer_->writable_file()->UpdateInternalKeysRange(tombstone_start, tombstone_end, icmp);
+    file_writer_->writable_file()->UpdateInternalKeysRange(tombstone_start, tombstone_end,
+                                                           tombstone.seq_, icmp);
     file_writer_->writable_file()->UpdateMetadata(builder_->GetTableProperties());
                       
     if (!bottommost_level) {
@@ -757,6 +761,7 @@ Status CompactionOutputs::AddRangeDels(
         }
       }
     }
+    file_writer_->writable_file()->UpdateMetadata(&meta);
   }
   return Status::OK();
 }

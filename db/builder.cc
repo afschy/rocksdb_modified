@@ -263,7 +263,7 @@ Status BuildTable(
       if (!s.ok()) {
         break;
       }
-      file_writer->writable_file()->UpdateInternalKeys(key_after_flush);
+      file_writer->writable_file()->UpdateInternalKeys(key_after_flush, ikey.sequence);
       file_writer->writable_file()->UpdateMetadata(builder->GetTableProperties());
 
       // TODO(noetzli): Update stats after flush, too.
@@ -310,6 +310,10 @@ Status BuildTable(
           }
           last_tombstone_start_user_key = range_del_it->start_key();
         }
+
+        file_writer->writable_file()->UpdateInternalKeysRange(kv.first, tombstone_end, tombstone.seq_,
+                                                              tboptions.internal_comparator);
+        file_writer->writable_file()->UpdateMetadata(meta);
       }
     }
 
@@ -381,6 +385,10 @@ Status BuildTable(
       if (table_properties) {
         *table_properties = tp;
       }
+      
+      auto vstorage = versions->GetColumnFamilySet()->GetDefault()->current()->storage_info();
+      uint64_t average_value_size = vstorage->GetAverageValueSize();
+      file_writer->writable_file()->UpdateMetadata(meta, average_value_size);
     }
     delete builder;
 

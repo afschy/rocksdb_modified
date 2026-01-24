@@ -1156,11 +1156,11 @@ class WritableFile {
     
   }
 
-  virtual void UpdateInternalKeys(const Slice& key) {
+  virtual void UpdateInternalKeys(const Slice& key, SequenceNumber seqno) {
     
   }
 
-  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, SequenceNumber seqno, const InternalKeyComparator& icmp) {
   
   }
 
@@ -1168,7 +1168,7 @@ class WritableFile {
     
   }
 
-  virtual void UpdateMetadata(const FileMetaData* meta) {
+  virtual void UpdateMetadata(const FileMetaData* meta, uint64_t average_value_size=0) {
 
   }
 
@@ -1975,20 +1975,20 @@ class WritableFileWrapper : public WritableFile {
     target_->SetLevel(level);
   }
 
-  virtual void UpdateInternalKeys(const Slice& key) {
-    target_->UpdateInternalKeys(key);
+  virtual void UpdateInternalKeys(const Slice& key, SequenceNumber seqno) {
+    target_->UpdateInternalKeys(key, seqno);
   }
 
-  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, const InternalKeyComparator& icmp) {
-    target_->UpdateInternalKeysRange(start, end, icmp);
+  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, SequenceNumber seqno, const InternalKeyComparator& icmp) {
+    target_->UpdateInternalKeysRange(start, end, seqno, icmp);
   }
 
   virtual void UpdateMetadata(const TableProperties& table_properties) {
     target_->UpdateMetadata(table_properties);
   }
 
-  virtual void UpdateMetadata(const FileMetaData* meta) {
-    target_->UpdateMetadata(meta);
+  virtual void UpdateMetadata(const FileMetaData* meta, uint64_t average_value_size=0) {
+    target_->UpdateMetadata(meta, average_value_size);
   }
 
   virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
