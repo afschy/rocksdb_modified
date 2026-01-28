@@ -169,7 +169,8 @@ Status BuildTable(
       // with the very same value will be ignored by the fs.
       file->SetWriteLifeTimeHint(fo_copy.write_hint);
       file->SetLevel(tboptions.level_at_creation);
-      file->SetInternalComparator(tboptions.internal_comparator);
+      InternalKeyComparator internal_comparator = tboptions.internal_comparator;
+      file->SetInternalComparator(&internal_comparator);
       file_writer.reset(new WritableFileWriter(
           std::move(file), fname, file_options, ioptions.clock, io_tracer,
           ioptions.stats, Histograms::SST_WRITE_MICROS, ioptions.listeners,
@@ -311,9 +312,9 @@ Status BuildTable(
           last_tombstone_start_user_key = range_del_it->start_key();
         }
 
-        file_writer->writable_file()->UpdateInternalKeysRange(kv.first, tombstone_end, tombstone.seq_,
-                                                              tboptions.internal_comparator);
-        file_writer->writable_file()->UpdateMetadata(meta);
+        file_writer->writable_file()->UpdateInternalKeysRange(kv.first.Encode(), tombstone_end.Encode(), tombstone.seq_,
+                                                              &(tboptions.internal_comparator));
+        file_writer->writable_file()->UpdateMetadata(meta->num_entries, meta->num_deletions, meta->num_range_deletions, meta->fd.file_size, meta->compensated_range_deletion_size);
       }
     }
 
@@ -388,7 +389,7 @@ Status BuildTable(
       
       auto vstorage = versions->GetColumnFamilySet()->GetDefault()->current()->storage_info();
       uint64_t average_value_size = vstorage->GetAverageValueSize();
-      file_writer->writable_file()->UpdateMetadata(meta, average_value_size);
+      file_writer->writable_file()->UpdateMetadata(meta->num_entries, meta->num_deletions, meta->num_range_deletions, meta->fd.file_size, meta->compensated_range_deletion_size, average_value_size);
     }
     delete builder;
 

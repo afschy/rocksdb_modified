@@ -53,7 +53,7 @@ Status CompactionOutputs::Finish(
         builder_->GetTableProperties().user_defined_timestamps_persisted);
         
     uint64_t average_value_size = compaction_->input_version()->storage_info()->GetAverageValueSize();
-    file_writer_->writable_file()->UpdateMetadata(meta, average_value_size);
+    file_writer_->writable_file()->UpdateMetadata(meta->num_entries, meta->num_deletions, meta->num_range_deletions, meta->fd.file_size, meta->compensated_range_deletion_size, average_value_size);
   }
   current_output().finished = true;
   stats_.bytes_written += current_bytes;
@@ -732,8 +732,8 @@ Status CompactionOutputs::AddRangeDels(
     assert(icmp.Compare(tombstone_start, tombstone_end) <= 0);
     meta.UpdateBoundariesForRange(tombstone_start, tombstone_end,
                                   tombstone.seq_, icmp);
-    file_writer_->writable_file()->UpdateInternalKeysRange(tombstone_start, tombstone_end,
-                                                           tombstone.seq_, icmp);
+    file_writer_->writable_file()->UpdateInternalKeysRange(tombstone_start.Encode(), tombstone_end.Encode(),
+                                                           tombstone.seq_, &icmp);
     file_writer_->writable_file()->UpdateMetadata(builder_->GetTableProperties());
                       
     if (!bottommost_level) {
@@ -761,7 +761,7 @@ Status CompactionOutputs::AddRangeDels(
         }
       }
     }
-    file_writer_->writable_file()->UpdateMetadata(&meta);
+    file_writer_->writable_file()->UpdateMetadata(meta.num_entries, meta.num_deletions, meta.num_range_deletions, meta.fd.file_size, meta.compensated_range_deletion_size);
   }
   return Status::OK();
 }

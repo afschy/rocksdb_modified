@@ -31,6 +31,7 @@
 #include "rocksdb/status.h"
 #include "rocksdb/thread_status.h"
 #include "rocksdb/types.h"
+#include "rocksdb/comparator.h"
 
 #ifdef _WIN32
 // Windows API macro interference
@@ -1160,7 +1161,7 @@ class WritableFile {
     
   }
 
-  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, SequenceNumber seqno, const InternalKeyComparator& icmp) {
+  virtual void UpdateInternalKeysRange(const Slice& start, const Slice& end, SequenceNumber seqno, const CompareInterface* icmp) {
   
   }
 
@@ -1168,11 +1169,11 @@ class WritableFile {
     
   }
 
-  virtual void UpdateMetadata(const FileMetaData* meta, uint64_t average_value_size=0) {
+  virtual void UpdateMetadata(uint64_t num_entries, uint64_t num_deletions, uint64_t num_range_deletions, uint64_t file_size, uint64_t compensated_range_deletion_size, uint64_t average_value_size=0) {
 
   }
 
-  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+  virtual void SetInternalComparator(CompareInterface* icmp) {
 
   }
 
@@ -1979,7 +1980,7 @@ class WritableFileWrapper : public WritableFile {
     target_->UpdateInternalKeys(key, seqno);
   }
 
-  virtual void UpdateInternalKeysRange(const InternalKey& start, const InternalKey& end, SequenceNumber seqno, const InternalKeyComparator& icmp) {
+  virtual void UpdateInternalKeysRange(const Slice& start, const Slice& end, SequenceNumber seqno, const CompareInterface* icmp) {
     target_->UpdateInternalKeysRange(start, end, seqno, icmp);
   }
 
@@ -1987,11 +1988,11 @@ class WritableFileWrapper : public WritableFile {
     target_->UpdateMetadata(table_properties);
   }
 
-  virtual void UpdateMetadata(const FileMetaData* meta, uint64_t average_value_size=0) {
-    target_->UpdateMetadata(meta, average_value_size);
+  virtual void UpdateMetadata(uint64_t num_entries, uint64_t num_deletions, uint64_t num_range_deletions, uint64_t file_size, uint64_t compensated_range_deletion_size, uint64_t average_value_size=0) {
+    target_->UpdateMetadata(num_entries, num_deletions, num_range_deletions, file_size, compensated_range_deletion_size, average_value_size);
   }
 
-  virtual void SetInternalComparator(const InternalKeyComparator& icmp) {
+  virtual void SetInternalComparator(CompareInterface* icmp) {
     target_->SetInternalComparator(icmp);
   }
 
