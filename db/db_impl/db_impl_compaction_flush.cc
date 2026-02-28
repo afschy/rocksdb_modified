@@ -4206,6 +4206,18 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     InitSnapshotContext(job_context);
     assert(is_snapshot_supported_ || snapshots_.empty());
 
+    // // Remove participating files from zenfs record
+    // for (size_t i = 0; i < c->num_input_levels(); i++) {
+    //   for (size_t j = 0; j < c->inputs(i)->size(); j++) {
+    //     FileMetaData* f = c->input(i, j);
+    //     const std::string filename =
+    //     TableFileName(c->immutable_options().cf_paths,
+    //     f->fd.GetNumber(), f->fd.GetPathId());
+    //     // immutable_db_options().fs->MoveFileToNewLevel(filename, c->output_level());
+    //     env_->GetFileSystem()->MoveFileToNewLevel(filename, -1);
+    //   }
+    // }
+
     CompactionJob compaction_job(
         job_context->job_id, c.get(), immutable_db_options_,
         mutable_db_options_, file_options_for_compaction_, versions_.get(),
