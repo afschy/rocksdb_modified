@@ -1,7 +1,7 @@
 #sudo rm -rf /home/afschy/db_extra/*
 #echo deadline | sudo tee -a /sys/class/block/nvme0n1/queue/scheduler
 #sudo make clean
-sudo DEBUG_LEVEL=0 USE_RTTI=1 ROCKSDB_PLUGINS=zenfs make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu) db_bench install
+sudo DEBUG_LEVEL=0 USE_RTTI=1 ROCKSDB_PLUGINS=zenfs DISABLE_WARNING_AS_ERROR=1 make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu) db_bench install
 cd plugin/zenfs/util
 PKG_CONFIG_PATH=/usr/local/lib/pkgconfig make clean
 PKG_CONFIG_PATH=/usr/local/lib/pkgconfig make
