@@ -111,6 +111,8 @@ typedef struct rocksdb_block_based_table_options_t
     rocksdb_block_based_table_options_t;
 typedef struct rocksdb_block_cache_trace_options_t
     rocksdb_block_cache_trace_options_t;
+typedef struct rocksdb_key_lookup_trace_options_t
+    rocksdb_key_lookup_trace_options_t;
 typedef struct rocksdb_block_cache_trace_writer_options_t
     rocksdb_block_cache_trace_writer_options_t;
 typedef struct rocksdb_cuckoo_table_options_t rocksdb_cuckoo_table_options_t;
@@ -2695,6 +2697,17 @@ extern ROCKSDB_LIBRARY_API void rocksdb_start_block_cache_trace_with_options(
     const rocksdb_block_cache_trace_options_t* options,
     const rocksdb_block_cache_trace_writer_options_t* writer_options,
     const char* trace_path, char** errptr);
+extern ROCKSDB_LIBRARY_API rocksdb_key_lookup_trace_options_t*
+rocksdb_key_lookup_trace_options_create(void);
+extern ROCKSDB_LIBRARY_API void rocksdb_key_lookup_trace_options_destroy(
+    rocksdb_key_lookup_trace_options_t* options);
+/* Traces which SST files and data blocks each Get() reads, writing plain text
+   to trace_path. Only point Get() is traced; see DB::StartKeyLookupTrace(). */
+extern ROCKSDB_LIBRARY_API void rocksdb_start_key_lookup_trace(
+    rocksdb_t* db, const rocksdb_key_lookup_trace_options_t* options,
+    const char* trace_path, char** errptr);
+extern ROCKSDB_LIBRARY_API void rocksdb_end_key_lookup_trace(rocksdb_t* db,
+                                                             char** errptr);
 extern ROCKSDB_LIBRARY_API void rocksdb_end_block_cache_trace(rocksdb_t* db,
                                                               char** errptr);
 

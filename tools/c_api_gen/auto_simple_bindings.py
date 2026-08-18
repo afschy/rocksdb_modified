@@ -265,6 +265,16 @@ OPTION_STRUCTS_GROUP = OutputGroup(
             mode="options",
         ),
         FamilyConfig(
+            struct_name="KeyLookupTraceOptions",
+            header=INCLUDE_ROOT / "key_lookup_trace_options.h",
+            c_receiver_type="rocksdb_key_lookup_trace_options_t*",
+            c_receiver_name="opt",
+            c_prefix="rocksdb_key_lookup_trace_options",
+            mode="options",
+            enum_types=("KeyLookupBlockIdMode", "CompressionType"),
+            enum_c_type="int",
+        ),
+        FamilyConfig(
             struct_name="BlockCacheTraceWriterOptions",
             header=INCLUDE_ROOT / "block_cache_trace_writer.h",
             c_receiver_type="rocksdb_block_cache_trace_writer_options_t*",
@@ -884,6 +894,7 @@ def getter_name(family: FamilyConfig, field_name: str) -> str:
 def scalar_return_type(qual_type: str) -> str | None:
     if qual_type in (
         "uint8_t",
+        "uint16_t",
         "uint32_t",
         "uint64_t",
         "int",

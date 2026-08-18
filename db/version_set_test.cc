@@ -1197,13 +1197,15 @@ class VersionSetTestBase {
     versions_.reset(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*read_only=*/false));
     reactive_versions_ = std::make_shared<ReactiveVersionSet>(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*io_tracer=*/nullptr, /*db_id=*/"", /*db_session_id=*/"");
+        /*key_lookup_tracer=*/nullptr, /*io_tracer=*/nullptr, /*db_id=*/"",
+        /*db_session_id=*/"");
     imm_db_options_.db_paths.emplace_back(dbname_,
                                           std::numeric_limits<uint64_t>::max());
   }
@@ -1393,7 +1395,8 @@ class VersionSetTestBase {
     versions_.reset(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*read_only=*/false));
     EXPECT_OK(versions_->Recover(column_families_, false));
@@ -1915,7 +1918,8 @@ TEST_F(VersionSetTest, WalAddition) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(new_versions->Recover(column_families_, /*read_only=*/false));
@@ -1983,7 +1987,8 @@ TEST_F(VersionSetTest, WalCloseWithoutSync) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(new_versions->Recover(column_families_, false));
@@ -2037,7 +2042,8 @@ TEST_F(VersionSetTest, WalDeletion) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(new_versions->Recover(column_families_, false));
@@ -2076,7 +2082,8 @@ TEST_F(VersionSetTest, WalDeletion) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(new_versions->Recover(column_families_, false));
@@ -2197,7 +2204,8 @@ TEST_F(VersionSetTest, DeleteWalsBeforeNonExistingWalNumber) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(new_versions->Recover(column_families_, false));
@@ -2234,7 +2242,8 @@ TEST_F(VersionSetTest, DeleteAllWals) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(new_versions->Recover(column_families_, false));
@@ -2277,7 +2286,8 @@ TEST_F(VersionSetTest, AtomicGroupWithWalEdits) {
     std::unique_ptr<VersionSet> new_versions(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     std::string db_id;
@@ -2749,7 +2759,8 @@ class VersionSetWithTimestampTest : public VersionSetTest {
     std::unique_ptr<VersionSet> vset(new VersionSet(
         dbname_, &imm_db_options_, mutable_db_options_, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr,
         /*db_id=*/"", /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*unchanging=*/false));
     ASSERT_OK(vset->Recover(column_families_, /*read_only=*/false,

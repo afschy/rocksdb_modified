@@ -146,8 +146,8 @@ class FlushJobTestBase : public testing::Test {
     versions_.reset(new VersionSet(
         dbname_, &db_options_, MutableDBOptions{options_}, env_options_,
         table_cache_.get(), &write_buffer_manager_, &write_controller_,
-        /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
-        test::kUnitTestDbId, /*db_session_id=*/"",
+        /*block_cache_tracer=*/nullptr, /*key_lookup_tracer=*/nullptr,
+        /*io_tracer=*/nullptr, test::kUnitTestDbId, /*db_session_id=*/"",
         /*daily_offpeak_time_utc=*/"",
         /*error_handler=*/nullptr, /*read_only=*/false));
     EXPECT_OK(versions_->Recover(column_families, false));

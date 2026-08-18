@@ -1328,6 +1328,47 @@ DEFINE_int64(
     "will not be logged if the trace file size exceeds this threshold. Default "
     "is 64 GB.");
 DEFINE_string(block_cache_trace_file, "", "Block cache trace file path.");
+DEFINE_string(key_lookup_trace_file, "",
+              "Key lookup trace file path. When set, each point Get() records "
+              "the SST files it searched and the data blocks it read.");
+DEFINE_int64(key_lookup_trace_sampling_frequency, 1,
+             "Key lookup trace sampling frequency, termed s. It samples one "
+             "out of every s Get() requests.");
+DEFINE_bool(key_lookup_trace_record_blocks, true,
+            "If true, a key lookup trace records the data blocks read from "
+            "each SST file, not just the sequence of files searched.");
+DEFINE_bool(key_lookup_trace_compress, false,
+            "If true, the key lookup trace file is zstd compressed as it is "
+            "written, producing a standard .zst file.");
+DEFINE_int32(key_lookup_trace_compression_level, 1,
+             "zstd level for --key_lookup_trace_compress. Level 1 gives most "
+             "of the achievable ratio on this data at a fraction of the CPU.");
+DEFINE_bool(key_lookup_trace_record_iterator_accesses, true,
+            "If true, a key lookup trace also records the data blocks read by "
+            "table iterators, which covers user iterators and compaction.");
+DEFINE_bool(key_lookup_trace_iterator_skip_compaction, false,
+            "If true, iterator accesses made by compaction are not recorded. "
+            "Compaction typically outweighs user iterators by one to two "
+            "orders of magnitude, so this is the main lever on trace size.");
+DEFINE_uint32(key_lookup_trace_iterator_caller_mask, 0xFFFF,
+              "Record an iterator access only if bit (1 << TableReaderCaller) "
+              "is set in this mask. Applied before "
+              "--key_lookup_trace_iterator_skip_compaction, which clears the "
+              "compaction bit from whatever is left.");
+DEFINE_string(key_lookup_trace_block_id_mode, "ordinal",
+              "How a data block is identified in a key lookup trace: "
+              "\"ordinal\" for its index among the file's data blocks, which "
+              "stays meaningful after the SST is gone but costs an index walk "
+              "on first access to each file, or \"offset\" for its byte "
+              "offset, which has no setup cost but needs the SST to still "
+              "exist to be interpreted.");
+DEFINE_uint64(key_lookup_trace_max_file_size,
+              uint64_t{64} * 1024 * 1024 * 1024,
+              "The maximum key lookup trace file size in bytes. Once it is "
+              "exceeded nothing further is recorded, of any record type. With "
+              "--key_lookup_trace_compress this counts compressed bytes and is "
+              "checked once per batch, so the file may overshoot by at most "
+              "one batch. Default is 64 GB.");
 DEFINE_int32(trace_replay_threads, 1,
              "The number of threads to replay, must >=1.");
 
@@ -4197,6 +4238,10 @@ class Benchmark {
     std::stringstream benchmark_stream(FLAGS_benchmarks);
     std::string name;
     std::unique_ptr<ExpiredTimeFilter> filter;
+    // One key lookup trace covers the whole run: EndKeyLookupTrace() is called
+    // after this loop, so starting again for the second benchmark in a list
+    // would fail with Busy.
+    bool key_lookup_trace_started = false;
     while (std::getline(benchmark_stream, name, ',')) {
       // Sanitize parameters
       num_ = FLAGS_num;
@@ -4696,6 +4741,66 @@ class Benchmark {
           fprintf(stdout, "Tracing block cache accesses to: [%s]\n",
                   FLAGS_block_cache_trace_file.c_str());
         }
+        // Start key lookup tracing.
+        if (!FLAGS_key_lookup_trace_file.empty() &&
+            !key_lookup_trace_started) {
+          if (FLAGS_key_lookup_trace_sampling_frequency <= 0) {
+            fprintf(stderr,
+                    "Key lookup trace sampling frequency must be higher than "
+                    "0.\n");
+            ErrorExit();
+          }
+          if (FLAGS_key_lookup_trace_iterator_caller_mask > 0xFFFF) {
+            fprintf(stderr,
+                    "Key lookup trace iterator caller mask must fit in 16 "
+                    "bits.\n");
+            ErrorExit();
+          }
+          KeyLookupBlockIdMode key_lookup_trace_block_id_mode;
+          if (FLAGS_key_lookup_trace_block_id_mode == "ordinal") {
+            key_lookup_trace_block_id_mode = KeyLookupBlockIdMode::kOrdinal;
+          } else if (FLAGS_key_lookup_trace_block_id_mode == "offset") {
+            key_lookup_trace_block_id_mode = KeyLookupBlockIdMode::kOffset;
+          } else {
+            fprintf(stderr,
+                    "Key lookup trace block id mode must be \"ordinal\" or "
+                    "\"offset\".\n");
+            ErrorExit();
+          }
+          KeyLookupTraceOptions key_lookup_trace_options;
+          key_lookup_trace_options.sampling_frequency =
+              FLAGS_key_lookup_trace_sampling_frequency;
+          key_lookup_trace_options.max_trace_file_size =
+              FLAGS_key_lookup_trace_max_file_size;
+          key_lookup_trace_options.record_blocks =
+              FLAGS_key_lookup_trace_record_blocks;
+          key_lookup_trace_options.block_id_mode =
+              key_lookup_trace_block_id_mode;
+          key_lookup_trace_options.compression =
+              FLAGS_key_lookup_trace_compress ? kZSTD : kNoCompression;
+          key_lookup_trace_options.compression_level =
+              FLAGS_key_lookup_trace_compression_level;
+          key_lookup_trace_options.record_iterator_accesses =
+              FLAGS_key_lookup_trace_record_iterator_accesses;
+          key_lookup_trace_options.iterator_caller_mask = static_cast<uint16_t>(
+              FLAGS_key_lookup_trace_iterator_caller_mask);
+          if (FLAGS_key_lookup_trace_iterator_skip_compaction) {
+            key_lookup_trace_options.iterator_caller_mask &=
+                static_cast<uint16_t>(~(1u << TableReaderCaller::kCompaction));
+          }
+          Status s = db_.db->StartKeyLookupTrace(key_lookup_trace_options,
+                                                 FLAGS_key_lookup_trace_file);
+          if (!s.ok()) {
+            fprintf(stderr,
+                    "Encountered an error when starting key lookup tracing, "
+                    "%s\n",
+                    s.ToString().c_str());
+            ErrorExit();
+          }
+          key_lookup_trace_started = true;
+          fprintf(stdout, "Tracing key lookups to: [%s]\n",
+                  FLAGS_key_lookup_trace_file.c_str());
+        }
 
         if (num_warmup > 0) {
           printf("Warming up benchmark by running %d times\n", num_warmup);
@@ -4742,6 +4847,14 @@ class Benchmark {
       if (!s.ok()) {
         fprintf(stderr,
                 "Encountered an error ending the block cache tracing, %s\n",
+                s.ToString().c_str());
+      }
+    }
+    if (!FLAGS_key_lookup_trace_file.empty()) {
+      Status s = db_.db->EndKeyLookupTrace();
+      if (!s.ok()) {
+        fprintf(stderr,
+                "Encountered an error ending the key lookup tracing, %s\n",
                 s.ToString().c_str());
       }
     }

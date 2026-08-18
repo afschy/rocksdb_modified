@@ -989,6 +989,7 @@ set(SOURCES
         tools/sst_dump_tool.cc
         tools/trace_analyzer_tool.cc
         trace_replay/block_cache_tracer.cc
+        trace_replay/key_lookup_tracer.cc
         trace_replay/io_tracer.cc
         trace_replay/trace_record_handler.cc
         trace_replay/trace_record_result.cc
@@ -1606,6 +1607,7 @@ if(WITH_TESTS)
         table/block_fetcher_test.cc
         test_util/testutil_test.cc
         trace_replay/block_cache_tracer_test.cc
+        trace_replay/key_lookup_tracer_test.cc
         trace_replay/io_tracer_test.cc
         tools/block_cache_analyzer/block_cache_trace_analyzer_test.cc
         tools/io_tracer_parser_test.cc

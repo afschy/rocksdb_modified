@@ -673,6 +673,9 @@ ColumnFamilyData::ColumnFamilyData(
     table_cache_.reset(new TableCache(ioptions_, file_options, _table_cache,
                                       block_cache_tracer, io_tracer,
                                       db_session_id, fast_sst_open));
+    if (column_family_set != nullptr) {
+      table_cache_->SetKeyLookupTracer(column_family_set->key_lookup_tracer());
+    }
     blob_file_cache_.reset(
         new BlobFileCache(_table_cache, &ioptions(), soptions(), id_,
                           internal_stats_->GetBlobFileReadHist(), io_tracer));

@@ -1677,7 +1677,8 @@ void DumpManifestFile(Options options, std::string file, bool verbose, bool hex,
   ImmutableDBOptions immutable_db_options(options);
   VersionSet versions(dbname, &immutable_db_options, MutableDBOptions{}, sopt,
                       tc.get(), &wb, &wc,
-                      /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+                      /*block_cache_tracer=*/nullptr,
+                      /*key_lookup_tracer=*/nullptr, /*io_tracer=*/nullptr,
                       /*db_id=*/"", /*db_session_id=*/"",
                       options.daily_offpeak_time_utc,
                       /*error_handler=*/nullptr, /*unchanging=*/true);
@@ -1873,7 +1874,8 @@ Status GetLiveFilesChecksumInfoFromVersionSet(Options options,
   ImmutableDBOptions immutable_db_options(options);
   VersionSet versions(dbname, &immutable_db_options, MutableDBOptions{options},
                       sopt, tc.get(), &wb, &wc,
-                      /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+                      /*block_cache_tracer=*/nullptr,
+                      /*key_lookup_tracer=*/nullptr, /*io_tracer=*/nullptr,
                       /*db_id=*/"", /*db_session_id=*/"",
                       options.daily_offpeak_time_utc,
                       /*error_handler=*/nullptr, /*unchanging=*/true);
@@ -2737,7 +2739,8 @@ Status ReduceDBLevelsCommand::GetOldNumOfLevels(Options& opt, int* levels) {
   WriteBufferManager wb(opt.db_write_buffer_size);
   VersionSet versions(db_path_, &db_options, MutableDBOptions{opt}, soptions,
                       tc.get(), &wb, &wc,
-                      /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr,
+                      /*block_cache_tracer=*/nullptr,
+                      /*key_lookup_tracer=*/nullptr, /*io_tracer=*/nullptr,
                       /*db_id=*/"", /*db_session_id=*/"",
                       opt.daily_offpeak_time_utc,
                       /*error_handler=*/nullptr, /*unchanging=*/false);

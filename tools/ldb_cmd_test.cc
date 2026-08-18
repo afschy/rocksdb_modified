@@ -211,7 +211,7 @@ class FileChecksumTestHelper {
     ImmutableDBOptions immutable_db_options(options_);
     VersionSet versions(dbname_, &immutable_db_options,
                         MutableDBOptions{options_}, sopt, tc.get(), &wb, &wc,
-                        nullptr, nullptr, "", "",
+                        nullptr, /*key_lookup_tracer=*/nullptr, nullptr, "", "",
                         options_.daily_offpeak_time_utc, nullptr,
                         /*read_only=*/false);
     std::vector<std::string> cf_name_list;

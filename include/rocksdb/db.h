@@ -20,6 +20,7 @@
 #include "rocksdb/attribute_groups.h"
 #include "rocksdb/block_cache_trace_writer.h"
 #include "rocksdb/iterator.h"
+#include "rocksdb/key_lookup_trace_options.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/metadata.h"
 #include "rocksdb/multi_scan.h"
@@ -2580,6 +2581,35 @@ class DB {
 
   virtual Status EndBlockCacheTrace() {
     return Status::NotSupported("EndBlockCacheTrace() is not implemented.");
+  }
+
+  // Trace the sequence of SST files searched by each Get(), and the data
+  // blocks read from each. Output is a plain text file at `trace_file_path`,
+  // one line per traced request; see
+  // include/rocksdb/key_lookup_trace_options.h and the format description in
+  // trace_replay/key_lookup_tracer.h. Use EndKeyLookupTrace() to stop tracing.
+  //
+  // Only point Get() is traced; MultiGet() and iterators are not. A lookup
+  // served entirely from a memtable produces no record at all, because it
+  // never reaches Version::Get(). A record with zero files searched means the
+  // lookup reached the SST levels and no file's key range covered the key.
+  //
+  // The files recorded for a request are the files actually searched, which is
+  // not exactly the set of files whose bloom filter was consulted: a file may
+  // be searched without a filter check when optimize_filters_for_hits skips
+  // the bottommost level, when the file has no filter block, or on a row cache
+  // hit. Both a filter-negative file and a row cache hit are recorded with no
+  // data blocks read.
+  //
+  // Tracing serializes trace writes through a mutex and measurably reduces
+  // read throughput. This is a diagnostic tool, not a production mode.
+  virtual Status StartKeyLookupTrace(const KeyLookupTraceOptions& /*options*/,
+                                     const std::string& /*trace_file_path*/) {
+    return Status::NotSupported("StartKeyLookupTrace() is not implemented.");
+  }
+
+  virtual Status EndKeyLookupTrace() {
+    return Status::NotSupported("EndKeyLookupTrace() is not implemented.");
   }
 
   // Create a default trace replayer.

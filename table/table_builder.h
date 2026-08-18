@@ -33,6 +33,7 @@ namespace ROCKSDB_NAMESPACE {
 class Slice;
 class Status;
 class BlobSource;
+class KeyLookupTracer;
 
 struct TableReaderOptions {
   // @param skip_filters Disables loading/accessing the filter block
@@ -120,6 +121,13 @@ struct TableReaderOptions {
   // (SstFileReader, sst_dump, repair, external-file ingestion prevalidation,
   // etc.), in which case embedded reads fall back to a direct (uncached) read.
   BlobSource* blob_source = nullptr;
+
+  // Key lookup tracer used by table iterators to record the data blocks they
+  // read. Set after construction, like blob_source above, so that the many
+  // positional callers of this struct's constructor are unaffected. Owned by
+  // the DB and outlives every table reader opened through it. nullptr when
+  // key lookup tracing is not wired up, e.g. SstFileReader, sst_dump, repair.
+  KeyLookupTracer* key_lookup_tracer = nullptr;
 };
 
 struct TableBuilderOptions : public TablePropertiesCollectorFactory::Context {

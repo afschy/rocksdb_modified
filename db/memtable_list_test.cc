@@ -115,6 +115,7 @@ class MemTableListTest : public testing::Test {
                         MutableDBOptions{db_options}, env_options,
                         table_cache.get(), &write_buffer_manager,
                         &write_controller, /*block_cache_tracer=*/nullptr,
+                        /*key_lookup_tracer=*/nullptr,
                         /*io_tracer=*/nullptr, /*db_id=*/"",
                         /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
                         /*error_handler=*/nullptr, /*read_only=*/false);
@@ -167,6 +168,7 @@ class MemTableListTest : public testing::Test {
                         MutableDBOptions{db_options}, env_options,
                         table_cache.get(), &write_buffer_manager,
                         &write_controller, /*block_cache_tracer=*/nullptr,
+                        /*key_lookup_tracer=*/nullptr,
                         /*io_tracer=*/nullptr, /*db_id=*/"",
                         /*db_session_id=*/"", /*daily_offpeak_time_utc=*/"",
                         /*error_handler=*/nullptr, /*read_only=*/false);

@@ -32,6 +32,7 @@
 #include "db/compaction/file_pri.h"
 #include "db/dbformat.h"
 #include "db/internal_stats.h"
+#include "db/key_lookup_trace_scope.h"
 #include "db/log_reader.h"
 #include "db/log_writer.h"
 #include "db/manifest_ops.h"
@@ -5350,6 +5351,7 @@ VersionSet::VersionSet(
     const FileOptions& storage_options, Cache* table_cache,
     WriteBufferManager* write_buffer_manager, WriteController* write_controller,
     BlockCacheTracer* const block_cache_tracer,
+    KeyLookupTracer* const key_lookup_tracer,
     const std::shared_ptr<IOTracer>& io_tracer, const std::string& db_id,
     const std::string& db_session_id, const std::string& daily_offpeak_time_utc,
     ErrorHandler* error_handler, bool unchanging)
@@ -5379,12 +5381,16 @@ VersionSet::VersionSet(
       last_compacted_manifest_file_size_(0),
       file_options_(storage_options),
       block_cache_tracer_(block_cache_tracer),
+      key_lookup_tracer_(key_lookup_tracer),
       io_tracer_(io_tracer),
       db_session_id_(db_session_id),
       offpeak_time_option_(OffpeakTimeOption(daily_offpeak_time_utc)),
       error_handler_(error_handler),
       unchanging_(unchanging),
       closed_(false) {
+  // Published before any column family is created, so every ColumnFamilyData
+  // built later picks it up when it constructs its TableCache.
+  column_family_set_->SetKeyLookupTracer(key_lookup_tracer);
   UpdatedMutableDbOptions(mutable_db_options, /*mu=*/nullptr);
 }
 
@@ -6192,6 +6198,14 @@ Status VersionSet::ProcessManifestWrites(
         ColumnFamilyData* cfd = versions[i]->cfd_;
         AppendVersion(cfd, versions[i]);
       }
+
+      // Key lookup tracing. Emitted here, after the manifest write succeeded
+      // and the new versions are installed, so an edit that failed never
+      // reaches the trace.
+      if (UNLIKELY(key_lookup_tracer_ != nullptr &&
+                   key_lookup_tracer_->is_tracing_enabled())) {
+        RecordFileLifecycleForTrace(batch_edits);
+      }
     }
     if (!skip_manifest_write) {
       assert(max_last_sequence >= descriptor_last_sequence_);
@@ -6412,6 +6426,70 @@ Status VersionSet::LogAndApply(
     return ProcessManifestWrites(writers, mu, dir_contains_current_file,
                                  new_descriptor_log, new_cf_options,
                                  read_options, write_options);
+  }
+}
+
+void VersionSet::RecordFileLifecycleForTrace(
+    const autovector<VersionEdit*>& batch_edits) {
+  assert(key_lookup_tracer_ != nullptr);
+  const uint64_t now_us = clock_->NowMicros();
+  // Reused across edits; edits in one batch are few and small.
+  std::unordered_map<uint64_t, int> new_file_levels;
+
+  for (const VersionEdit* e : batch_edits) {
+    if (e->IsColumnFamilyManipulation()) {
+      continue;
+    }
+    const auto& new_files = e->GetNewFiles();
+    const auto& deleted_files = e->GetDeletedFiles();
+    if (new_files.empty() && deleted_files.empty()) {
+      continue;
+    }
+    const uint32_t cf_id = e->GetColumnFamily();
+
+    // A file number present in both the added and the removed set is a trivial
+    // move: the file was relabeled to a different level, not rewritten. Its
+    // blocks stay byte identical, so recording it as a delete plus a create
+    // would make a cache simulator discard cached blocks that are still live.
+    new_file_levels.clear();
+    new_file_levels.reserve(new_files.size());
+    for (const auto& nf : new_files) {
+      new_file_levels.emplace(nf.second.fd.GetNumber(), nf.first);
+    }
+
+    for (const auto& df : deleted_files) {
+      const int from_level = df.first;
+      const uint64_t file_number = df.second;
+      auto it = new_file_levels.find(file_number);
+      if (it != new_file_levels.end()) {
+        key_lookup_tracer_
+            ->WriteFileLifecycle(now_us, KeyLookupFileOp::kMove, cf_id,
+                                 file_number, static_cast<uint32_t>(from_level),
+                                 static_cast<uint32_t>(it->second))
+            .PermitUncheckedError();
+        // Erasing marks it as already reported, so the loop below skips it.
+        new_file_levels.erase(it);
+      } else {
+        key_lookup_tracer_
+            ->WriteFileLifecycle(now_us, KeyLookupFileOp::kDelete, cf_id,
+                                 file_number, static_cast<uint32_t>(from_level),
+                                 /*to_level=*/0)
+            .PermitUncheckedError();
+      }
+    }
+
+    for (const auto& nf : new_files) {
+      const uint64_t file_number = nf.second.fd.GetNumber();
+      if (new_file_levels.find(file_number) == new_file_levels.end()) {
+        // Already reported as a move.
+        continue;
+      }
+      key_lookup_tracer_
+          ->WriteFileLifecycle(now_us, KeyLookupFileOp::kCreate, cf_id,
+                               file_number, static_cast<uint32_t>(nf.first),
+                               /*to_level=*/0)
+          .PermitUncheckedError();
+    }
   }
 }
 
@@ -7020,7 +7098,7 @@ Status VersionSet::ReduceNumberOfLevels(const std::string& dbname,
   WriteBufferManager wb(options->db_write_buffer_size);
   VersionSet versions(dbname, &imm_db_options, mutable_db_options, file_options,
                       tc.get(), &wb, &wc, nullptr /*BlockCacheTracer*/,
-                      nullptr /*IOTracer*/,
+                      nullptr /*KeyLookupTracer*/, nullptr /*IOTracer*/,
                       /*db_id*/ "",
                       /*db_session_id*/ "", options->daily_offpeak_time_utc,
                       /*error_handler_*/ nullptr, /*unchanging=*/false);
@@ -8112,12 +8190,13 @@ ReactiveVersionSet::ReactiveVersionSet(
     const MutableDBOptions& mutable_db_options,
     const FileOptions& _file_options, Cache* table_cache,
     WriteBufferManager* write_buffer_manager, WriteController* write_controller,
+    KeyLookupTracer* const key_lookup_tracer,
     const std::shared_ptr<IOTracer>& io_tracer, const std::string& db_id,
     const std::string& db_session_id)
     : VersionSet(dbname, imm_db_options, mutable_db_options, _file_options,
                  table_cache, write_buffer_manager, write_controller,
-                 /*block_cache_tracer=*/nullptr, io_tracer, db_id,
-                 db_session_id, /*daily_offpeak_time_utc*/ "",
+                 /*block_cache_tracer=*/nullptr, key_lookup_tracer, io_tracer,
+                 db_id, db_session_id, /*daily_offpeak_time_utc*/ "",
                  /*error_handler=*/nullptr, /*unchanging=*/false) {}
 
 ReactiveVersionSet::~ReactiveVersionSet() = default;

@@ -56,6 +56,32 @@ DEFINE_SYNC_AND_ASYNC(void, Version::Get)
     pinned_iters_mgr->StartPinning();
   }
 
+  // Key lookup tracing buffers for this request. `blocks` and `probes` MUST
+  // be declared before `klt_scope`: destructors run in reverse declaration
+  // order, so the scope is destroyed first and the buffers it reads are still
+  // alive when it emits the record.
+  KeyLookupBlockAccesses blocks;
+  KeyLookupProbes probes;
+  KeyLookupTracer* klt = vset_ ? vset_->key_lookup_tracer_ : nullptr;
+  uint64_t lookup_id = KeyLookupTracer::kReservedLookupId;
+  uint64_t klt_seq = 0;
+  if (UNLIKELY(klt != nullptr && klt->is_tracing_enabled())) {
+    // Returns the reserved id when this lookup is not sampled.
+    lookup_id = klt->NextLookupId();
+    if (lookup_id != KeyLookupTracer::kReservedLookupId) {
+      // Allocated here, at lookup start, so that it precedes the sequence
+      // numbers of any block this lookup goes on to read.
+      klt_seq = klt->NextSeq();
+      if (klt->options().record_blocks) {
+        get_context.SetBlockSink(&blocks, klt->options().block_id_mode, klt);
+      }
+    }
+  }
+  KeyLookupTraceScope klt_scope(
+      lookup_id != KeyLookupTracer::kReservedLookupId ? klt : nullptr, klt_seq,
+      lookup_id, cfd_->GetID(), clock_, status, &get_context,
+      max_covering_tombstone_seq, &probes, &blocks);
+
   FilePicker fp(user_key, ikey, &storage_info_.level_files_brief_,
                 storage_info_.num_non_empty_levels_,
                 &storage_info_.file_indexer_, user_comparator(),
@@ -78,6 +104,12 @@ DEFINE_SYNC_AND_ASYNC(void, Version::Get)
         get_perf_context()->per_level_perf_context_enabled;
     StopWatchNano timer(clock_, timer_enabled /* auto_start */);
 #endif
+    size_t blocks_before = 0;
+    size_t operands_before = 0;
+    if (UNLIKELY(lookup_id != KeyLookupTracer::kReservedLookupId)) {
+      blocks_before = blocks.size();
+      operands_before = merge_context->GetNumOperands();
+    }
     *status =
         CO_AWAIT(table_cache_->Get, read_options, *internal_comparator(),
                  *f->file_metadata, ikey, &get_context, mutable_cf_options_,
@@ -92,6 +124,16 @@ DEFINE_SYNC_AND_ASYNC(void, Version::Get)
                                 fp.GetHitFileLevel());
     }
 #endif
+    // Record the probe before the error return below, or error probes are
+    // lost from the trace.
+    if (UNLIKELY(lookup_id != KeyLookupTracer::kReservedLookupId)) {
+      probes.push_back(
+          {fp.GetHitFileLevel(), f->fd.GetNumber(),
+           ClassifyProbeOutcome(*status, get_context.State(), operands_before,
+                                merge_context->GetNumOperands()),
+           static_cast<uint32_t>(blocks_before),
+           static_cast<uint32_t>(blocks.size() - blocks_before)});
+    }
     if (!status->ok()) {
       if (db_statistics_ != nullptr) {
         get_context.ReportCounters();

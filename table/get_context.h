@@ -7,13 +7,17 @@
 #include <string>
 
 #include "db/read_callback.h"
+#include "rocksdb/key_lookup_trace_options.h"
 #include "rocksdb/status.h"
 #include "rocksdb/types.h"
+#include "trace_replay/key_lookup_block_access.h"
+#include "util/autovector.h"
 
 namespace ROCKSDB_NAMESPACE {
 class BlobFetcher;
 class Cleanable;
 class Comparator;
+class KeyLookupTracer;
 class Logger;
 class MergeContext;
 class MergeOperator;
@@ -225,6 +229,22 @@ class GetContext {
 
   uint64_t get_tracing_get_id() const { return tracing_get_id_; }
 
+  // Key lookup tracing: where to append the data blocks read for this lookup,
+  // how their ids are formed, and the tracer that hands out their sequence
+  // numbers. A setter rather than constructor parameters, since GetContext's
+  // positional constructors have many call sites and only one of them traces.
+  // `tracer` must be non-null whenever `sink` is.
+  void SetBlockSink(KeyLookupBlockAccesses* sink,
+                    KeyLookupBlockIdMode block_id_mode,
+                    KeyLookupTracer* tracer) {
+    block_sink_ = sink;
+    block_id_mode_ = block_id_mode;
+    key_lookup_tracer_ = tracer;
+  }
+  KeyLookupBlockAccesses* block_sink() const { return block_sink_; }
+  KeyLookupBlockIdMode block_id_mode() const { return block_id_mode_; }
+  KeyLookupTracer* key_lookup_tracer() const { return key_lookup_tracer_; }
+
   void push_operand(const Slice& value, Cleanable* value_pinner);
 
  private:
@@ -297,6 +317,14 @@ class GetContext {
   // caller can resolve same-file/embedded references on demand later. Only the
   // SST read path (Version::Get) sets this; memtable hits are unaffected.
   const SameFileBlobReader** lazy_columns_same_file_reader_;
+  // Sink for the ids of data blocks read on behalf of this lookup, owned by
+  // the caller (Version::Get). Null when key lookup tracing is off or this
+  // lookup was not sampled. A raw pointer rather than an embedded container
+  // because GetContext is constructed per key in MultiGet batches, which never
+  // use this.
+  KeyLookupBlockAccesses* block_sink_ = nullptr;
+  KeyLookupBlockIdMode block_id_mode_ = KeyLookupBlockIdMode::kOrdinal;
+  KeyLookupTracer* key_lookup_tracer_ = nullptr;
 };
 
 // Call this to replay a log and bring the get_context up to date. The replay

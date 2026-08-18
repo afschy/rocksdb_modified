@@ -12,6 +12,52 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+void BlockBasedTableIterator::TraceBlockAccess(const BlockHandle& handle) {
+  // `uncomp_bytes` is left at 0 and filled in by FinishTracedBlock() once the
+  // block materializes; it does not exist until then. Recording the access
+  // here, before any cache is consulted, is what keeps the trace independent
+  // of cache state.
+  klt_blocks_.push_back(
+      {table_->BlockIdForTrace(read_options_, handle.offset(),
+                               klt_->options().block_id_mode),
+       klt_->NextSeq(),
+       static_cast<uint32_t>(handle.size() +
+                             BlockBasedTable::kBlockTrailerSize),
+       /*uncomp_bytes=*/0});
+}
+
+void BlockBasedTableIterator::FinishTracedBlock() {
+  if (!klt_blocks_.empty()) {
+    klt_blocks_.back().uncomp_bytes = block_iter_.block_size();
+  }
+  if (klt_blocks_.size() >= KeyLookupTracer::kIterFlushThreshold) {
+    FlushTracedBlocks();
+  }
+}
+
+void BlockBasedTableIterator::FlushTracedBlocks() {
+  if (klt_blocks_.empty()) {
+    return;
+  }
+  // Tracing can be stopped while this iterator is alive, in which case the
+  // write is dropped. Do not assume the tracer that was enabled at
+  // construction still is. If it was stopped and started again, these ids and
+  // sequence numbers belong to the previous session, so drop them rather than
+  // injecting them into the new trace.
+  if (klt_->session_id() != klt_session_) {
+    klt_blocks_.clear();
+    return;
+  }
+  const BlockBasedTable::Rep* rep = table_->get_rep();
+  klt_->WriteIteratorAccess(
+          klt_->NextSeq(), rep->ioptions.clock->NowMicros(), /*cf_id=*/0,
+          static_cast<uint32_t>(lookup_context_.caller), klt_iter_id_,
+          rep->level_for_tracing(), rep->file_number, !read_options_.fill_cache,
+          klt_blocks_)
+      .PermitUncheckedError();
+  klt_blocks_.clear();
+}
+
 void BlockBasedTableIterator::SeekToFirst() { SeekImpl(nullptr, false); }
 
 void BlockBasedTableIterator::Seek(const Slice& target) {
@@ -409,8 +455,14 @@ void BlockBasedTableIterator::InitDataBlock() {
       if (!multi_scan_status_.ok()) {
         return;
       }
+      if (UNLIKELY(klt_ != nullptr)) {
+        TraceBlockAccess(data_block_handle);
+      }
       table_->NewDataBlockIterator<DataBlockIter>(read_options_, block_entry,
                                                   &block_iter_, Status::OK());
+      if (UNLIKELY(klt_ != nullptr)) {
+        FinishTracedBlock();
+      }
       block_iter_points_to_real_block_ = true;
       prev_block_offset_ = data_block_handle.offset();
       CheckDataBlockWithinUpperBound();
@@ -441,6 +493,13 @@ void BlockBasedTableIterator::InitDataBlock() {
 
     bool is_for_compaction =
         lookup_context_.caller == TableReaderCaller::kCompaction;
+
+    // Key lookup tracing. Recorded before either branch below, so that a block
+    // served from the block cache and a block read from disk are recorded
+    // identically. That is what makes the trace independent of cache state.
+    if (UNLIKELY(klt_ != nullptr)) {
+      TraceBlockAccess(data_block_handle);
+    }
 
     // Initialize Data Block From CacheableEntry.
     if (is_in_cache) {
@@ -480,6 +539,9 @@ void BlockBasedTableIterator::InitDataBlock() {
           block_prefetcher_.prefetch_buffer(),
           /*for_compaction=*/is_for_compaction, /*async_read=*/false, s,
           use_block_cache_for_lookup);
+    }
+    if (UNLIKELY(klt_ != nullptr)) {
+      FinishTracedBlock();
     }
     block_iter_points_to_real_block_ = true;
 
@@ -545,6 +607,15 @@ void BlockBasedTableIterator::AsyncInitDataBlock(bool is_first_pass) {
         async_read_in_progress_ = true;
         return;
       }
+      // Key lookup tracing. Recorded after the call rather than before it, as
+      // the synchronous path does, because a first pass that returns TryAgain
+      // has not read anything; the second pass below records that access
+      // instead. Recording here is still independent of cache state: it
+      // happens whether the block came from the cache or from disk.
+      if (UNLIKELY(klt_ != nullptr)) {
+        TraceBlockAccess(data_block_handle);
+        FinishTracedBlock();
+      }
     }
   } else {
     // Second pass will call the Poll to get the data block which has been
@@ -572,6 +643,11 @@ void BlockBasedTableIterator::AsyncInitDataBlock(bool is_first_pass) {
           block_prefetcher_.prefetch_buffer(),
           /*for_compaction=*/is_for_compaction, /*async_read=*/false, s,
           /*use_block_cache_for_lookup=*/false);
+    }
+    // Completion of the access the first pass began. See the comment there.
+    if (UNLIKELY(klt_ != nullptr)) {
+      TraceBlockAccess(data_block_handle);
+      FinishTracedBlock();
     }
   }
   block_iter_points_to_real_block_ = true;

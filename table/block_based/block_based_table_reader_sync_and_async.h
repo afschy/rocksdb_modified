@@ -391,6 +391,15 @@ DEFINE_SYNC_AND_ASYNC(TBlockIter*, BlockBasedTable::NewDataBlockIterator)(
     CO_RETURN iter;
   }
 
+  // Key lookup tracing needs the materialized (uncompressed) block size, which
+  // does not exist until the block materializes. It materializes on both a
+  // cache hit and a miss, so recording it here keeps the trace independent of
+  // cache state. Both the Get path and the iterator path read it back off the
+  // iterator.
+  if (block.GetValue() != nullptr) {
+    iter->SetBlockSize(block.GetValue()->size());
+  }
+
   assert(block.GetValue() != nullptr);
   assert(block_type != BlockType::kData ||
          block.GetValue()->HasSeparatedKV() ==
@@ -471,6 +480,8 @@ DEFINE_SYNC_AND_ASYNC(TBlockIter*, BlockBasedTable::NewDataBlockIterator)(
       (!block.GetValue()->own_bytes() && rep_->immortal_table);
   iter = InitBlockIterator<TBlockIter>(rep_, block.GetValue(), BlockType::kData,
                                        iter, block_contents_pinned);
+  // See the matching comment in the BlockHandle overload above.
+  iter->SetBlockSize(block.GetValue()->size());
 
   if (!block.IsCached()) {
     if (!ro.fill_cache) {
@@ -581,6 +592,22 @@ DEFINE_SYNC_AND_ASYNC(Status, BlockBasedTable::Get)
         break;
       }
 
+      // Key lookup tracing. Placed after the break above so that a block that
+      // is skipped rather than read is not recorded.
+      //
+      // `uncomp_bytes` is left at 0 here and filled in by NewDataBlockIterator
+      // once the block materializes; it does not exist until then. That keeps
+      // this recording decision independent of cache state, since the block
+      // materializes on both a cache hit and a miss.
+      if (UNLIKELY(get_context->block_sink() != nullptr)) {
+        get_context->block_sink()->push_back(
+            {BlockIdForTrace(read_options, v.handle.offset(),
+                             get_context->block_id_mode()),
+             get_context->key_lookup_tracer()->NextSeq(),
+             static_cast<uint32_t>(v.handle.size() + kBlockTrailerSize),
+             /*uncomp_bytes=*/0});
+      }
+
       BlockCacheLookupContext lookup_data_block_context{
           TableReaderCaller::kUserGet, tracing_get_id,
           /*get_from_user_specified_snapshot=*/read_options.snapshot !=
@@ -594,6 +621,13 @@ DEFINE_SYNC_AND_ASYNC(Status, BlockBasedTable::Get)
                /*prefetch_buffer=*/nullptr, /*for_compaction=*/false,
                /*async_read=*/false, tmp_status,
                /*use_block_cache_for_lookup=*/true);
+
+      // Key lookup tracing: complete the access pushed just above now that the
+      // block has materialized. The push is unconditional whenever a sink is
+      // set, and happens immediately before this call, so back() is it.
+      if (UNLIKELY(get_context->block_sink() != nullptr)) {
+        get_context->block_sink()->back().uncomp_bytes = biter.block_size();
+      }
 
       if (read_options.read_tier == kBlockCacheTier &&
           biter.status().IsIncomplete()) {

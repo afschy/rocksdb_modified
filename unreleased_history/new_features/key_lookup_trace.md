@@ -1,0 +1,1 @@
+Added `DB::StartKeyLookupTrace()` for tracing which SST files and data blocks each `Get()` and each table iterator reads, along with block sizes and file lifecycle events, for offline block cache analysis. The trace can be zstd compressed as it is written.

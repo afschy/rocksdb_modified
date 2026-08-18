@@ -525,6 +525,15 @@ class StackableDB : public DB {
   using DB::EndBlockCacheTrace;
   Status EndBlockCacheTrace() override { return db_->EndBlockCacheTrace(); }
 
+  using DB::StartKeyLookupTrace;
+  Status StartKeyLookupTrace(const KeyLookupTraceOptions& options,
+                             const std::string& trace_file_path) override {
+    return db_->StartKeyLookupTrace(options, trace_file_path);
+  }
+
+  using DB::EndKeyLookupTrace;
+  Status EndKeyLookupTrace() override { return db_->EndKeyLookupTrace(); }
+
   using DB::StartIOTrace;
   Status StartIOTrace(const TraceOptions& options,
                       std::unique_ptr<TraceWriter>&& trace_writer) override {

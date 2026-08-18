@@ -119,6 +119,7 @@ using ROCKSDB_NAMESPACE::ImportColumnFamilyOptions;
 using ROCKSDB_NAMESPACE::InfoLogLevel;
 using ROCKSDB_NAMESPACE::IngestExternalFileOptions;
 using ROCKSDB_NAMESPACE::Iterator;
+using ROCKSDB_NAMESPACE::KeyLookupTraceOptions;
 using ROCKSDB_NAMESPACE::LevelMetaData;
 using ROCKSDB_NAMESPACE::LiveFileMetaData;
 using ROCKSDB_NAMESPACE::LiveFilesStorageInfoOptions;
@@ -465,6 +466,9 @@ struct rocksdb_block_based_table_options_t {
 };
 struct rocksdb_block_cache_trace_options_t {
   BlockCacheTraceOptions rep;
+};
+struct rocksdb_key_lookup_trace_options_t {
+  KeyLookupTraceOptions rep;
 };
 struct rocksdb_block_cache_trace_writer_options_t {
   BlockCacheTraceWriterOptions rep;
@@ -6606,6 +6610,29 @@ void rocksdb_start_block_cache_trace_with_options(
 
 void rocksdb_end_block_cache_trace(rocksdb_t* db, char** errptr) {
   SaveError(errptr, db->rep->EndBlockCacheTrace());
+}
+
+rocksdb_key_lookup_trace_options_t* rocksdb_key_lookup_trace_options_create() {
+  return new rocksdb_key_lookup_trace_options_t;
+}
+
+void rocksdb_key_lookup_trace_options_destroy(
+    rocksdb_key_lookup_trace_options_t* options) {
+  delete options;
+}
+
+void rocksdb_start_key_lookup_trace(
+    rocksdb_t* db, const rocksdb_key_lookup_trace_options_t* options,
+    const char* trace_path, char** errptr) {
+  KeyLookupTraceOptions default_options;
+  const KeyLookupTraceOptions& key_lookup_trace_options =
+      options != nullptr ? options->rep : default_options;
+  SaveError(errptr, db->rep->StartKeyLookupTrace(key_lookup_trace_options,
+                                                 std::string(trace_path)));
+}
+
+void rocksdb_end_key_lookup_trace(rocksdb_t* db, char** errptr) {
+  SaveError(errptr, db->rep->EndKeyLookupTrace());
 }
 
 rocksdb_sstfilewriter_t* rocksdb_sstfilewriter_create(

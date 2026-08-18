@@ -559,6 +559,54 @@ static void rocksdb_roundtrip_test_rocksdb_ingestexternalfileoptions(void) {
   rocksdb_ingestexternalfileoptions_destroy(obj);
 }
 
+static void rocksdb_roundtrip_test_rocksdb_key_lookup_trace_options(void) {
+  rocksdb_key_lookup_trace_options_t* obj =
+      rocksdb_key_lookup_trace_options_create();
+  rocksdb_key_lookup_trace_options_set_block_id_mode(obj, 1);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_block_id_mode(obj) == 1);
+  rocksdb_key_lookup_trace_options_set_block_id_mode(obj, 0);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_block_id_mode(obj) == 0);
+  rocksdb_key_lookup_trace_options_set_compression(obj, 1);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_compression(obj) == 1);
+  rocksdb_key_lookup_trace_options_set_compression(obj, 0);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_compression(obj) == 0);
+  rocksdb_key_lookup_trace_options_set_compression_level(obj, 1);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_compression_level(obj) ==
+                 1);
+  rocksdb_key_lookup_trace_options_set_compression_level(obj, 0);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_compression_level(obj) ==
+                 0);
+  rocksdb_key_lookup_trace_options_set_iterator_caller_mask(obj, 1);
+  CheckCondition(
+      rocksdb_key_lookup_trace_options_get_iterator_caller_mask(obj) == 1);
+  rocksdb_key_lookup_trace_options_set_iterator_caller_mask(obj, 0);
+  CheckCondition(
+      rocksdb_key_lookup_trace_options_get_iterator_caller_mask(obj) == 0);
+  rocksdb_key_lookup_trace_options_set_max_trace_file_size(obj, 1);
+  CheckCondition(
+      rocksdb_key_lookup_trace_options_get_max_trace_file_size(obj) == 1);
+  rocksdb_key_lookup_trace_options_set_max_trace_file_size(obj, 0);
+  CheckCondition(
+      rocksdb_key_lookup_trace_options_get_max_trace_file_size(obj) == 0);
+  rocksdb_key_lookup_trace_options_set_record_blocks(obj, 1);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_record_blocks(obj) == 1);
+  rocksdb_key_lookup_trace_options_set_record_blocks(obj, 0);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_record_blocks(obj) == 0);
+  rocksdb_key_lookup_trace_options_set_record_iterator_accesses(obj, 1);
+  CheckCondition(
+      rocksdb_key_lookup_trace_options_get_record_iterator_accesses(obj) == 1);
+  rocksdb_key_lookup_trace_options_set_record_iterator_accesses(obj, 0);
+  CheckCondition(
+      rocksdb_key_lookup_trace_options_get_record_iterator_accesses(obj) == 0);
+  rocksdb_key_lookup_trace_options_set_sampling_frequency(obj, 1);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_sampling_frequency(obj) ==
+                 1);
+  rocksdb_key_lookup_trace_options_set_sampling_frequency(obj, 0);
+  CheckCondition(rocksdb_key_lookup_trace_options_get_sampling_frequency(obj) ==
+                 0);
+  rocksdb_key_lookup_trace_options_destroy(obj);
+}
+
 static void rocksdb_roundtrip_test_rocksdb_livefiles_storage_info_options(
     void) {
   rocksdb_livefiles_storage_info_options_t* obj =
@@ -1362,6 +1410,7 @@ static void rocksdb_run_generated_roundtrip_tests(void) {
   rocksdb_roundtrip_test_rocksdb_flushoptions();
   rocksdb_roundtrip_test_rocksdb_flushwaloptions();
   rocksdb_roundtrip_test_rocksdb_ingestexternalfileoptions();
+  rocksdb_roundtrip_test_rocksdb_key_lookup_trace_options();
   rocksdb_roundtrip_test_rocksdb_livefiles_storage_info_options();
   rocksdb_roundtrip_test_rocksdb_optimistictransactiondb_options();
   rocksdb_roundtrip_test_rocksdb_options();

@@ -35,6 +35,7 @@ struct FileDescriptor;
 class GetContext;
 class HistogramImpl;
 class BlobSource;
+class KeyLookupTracer;
 
 struct TableCacheOpenOptions {
   // Open a new TableReader owned by the returned iterator instead of reusing
@@ -78,6 +79,13 @@ class TableCache {
   // (nullptr) in non-DB contexts (e.g. repair), where embedded reads fall back
   // to a direct (uncached) read.
   void SetBlobSource(BlobSource* blob_source) { blob_source_ = blob_source; }
+
+  // Sets the key lookup tracer handed to every table reader opened through
+  // this cache, so that table iterators can record their block accesses.
+  // Called once at CFD setup; null in non-DB contexts such as repair.
+  void SetKeyLookupTracer(KeyLookupTracer* tracer) {
+    key_lookup_tracer_ = tracer;
+  }
 
   // Cache interface for table cache
   using CacheInterface =
@@ -361,6 +369,7 @@ class TableCache {
   bool should_pin_table_handles_;
   std::atomic<bool> fast_sst_open_;
   BlockCacheTracer* const block_cache_tracer_;
+  KeyLookupTracer* key_lookup_tracer_ = nullptr;
   Striped<CacheAlignedWrapper<port::Mutex>> loader_mutex_;
   std::shared_ptr<IOTracer> io_tracer_;
   std::string db_session_id_;

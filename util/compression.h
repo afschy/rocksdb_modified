@@ -711,6 +711,12 @@ class ZSTDStreamingCompress final : public StreamingCompress {
     cctx_ = ZSTD_createCCtx();
     // Each compressed frame will have a checksum
     ZSTD_CCtx_setParameter(cctx_, ZSTD_c_checksumFlag, 1);
+    // Honor an explicitly configured level. kDefaultCompressionLevel means
+    // "let zstd pick", which is what leaving the parameter unset already does,
+    // so callers that do not set a level see no change.
+    if (opts.level != CompressionOptions::kDefaultCompressionLevel) {
+      ZSTD_CCtx_setParameter(cctx_, ZSTD_c_compressionLevel, opts.level);
+    }
     assert(cctx_ != nullptr);
     input_buffer_ = {/*src=*/nullptr, /*size=*/0, /*pos=*/0};
 #endif

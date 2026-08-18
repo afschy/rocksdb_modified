@@ -2255,6 +2255,9 @@ db_follower_test: $(OBJ_DIR)/db/db_follower_test.o $(TEST_LIBRARY) $(LIBRARY)
 block_cache_tracer_test: $(OBJ_DIR)/trace_replay/block_cache_tracer_test.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 
+key_lookup_tracer_test: $(OBJ_DIR)/trace_replay/key_lookup_tracer_test.o $(TEST_LIBRARY) $(LIBRARY)
+	$(AM_LINK)
+
 block_cache_trace_analyzer_test: $(OBJ_DIR)/tools/block_cache_analyzer/block_cache_trace_analyzer_test.o $(OBJ_DIR)/tools/block_cache_analyzer/block_cache_trace_analyzer.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 

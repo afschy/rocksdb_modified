@@ -123,6 +123,7 @@ using ROCKSDB_NAMESPACE::ImportColumnFamilyOptions;
 using ROCKSDB_NAMESPACE::InfoLogLevel;
 using ROCKSDB_NAMESPACE::IngestExternalFileOptions;
 using ROCKSDB_NAMESPACE::Iterator;
+using ROCKSDB_NAMESPACE::KeyLookupTraceOptions;
 using ROCKSDB_NAMESPACE::LevelMetaData;
 using ROCKSDB_NAMESPACE::LiveFileMetaData;
 using ROCKSDB_NAMESPACE::LiveFilesStorageInfoOptions;
@@ -469,6 +470,9 @@ struct rocksdb_block_based_table_options_t {
 };
 struct rocksdb_block_cache_trace_options_t {
   BlockCacheTraceOptions rep;
+};
+struct rocksdb_key_lookup_trace_options_t {
+  KeyLookupTraceOptions rep;
 };
 struct rocksdb_block_cache_trace_writer_options_t {
   BlockCacheTraceWriterOptions rep;
@@ -8110,6 +8114,29 @@ void rocksdb_end_block_cache_trace(rocksdb_t* db, char** errptr) {
   SaveError(errptr, db->rep->EndBlockCacheTrace());
 }
 
+rocksdb_key_lookup_trace_options_t* rocksdb_key_lookup_trace_options_create() {
+  return new rocksdb_key_lookup_trace_options_t;
+}
+
+void rocksdb_key_lookup_trace_options_destroy(
+    rocksdb_key_lookup_trace_options_t* options) {
+  delete options;
+}
+
+void rocksdb_start_key_lookup_trace(
+    rocksdb_t* db, const rocksdb_key_lookup_trace_options_t* options,
+    const char* trace_path, char** errptr) {
+  KeyLookupTraceOptions default_options;
+  const KeyLookupTraceOptions& key_lookup_trace_options =
+      options != nullptr ? options->rep : default_options;
+  SaveError(errptr, db->rep->StartKeyLookupTrace(key_lookup_trace_options,
+                                                 std::string(trace_path)));
+}
+
+void rocksdb_end_key_lookup_trace(rocksdb_t* db, char** errptr) {
+  SaveError(errptr, db->rep->EndKeyLookupTrace());
+}
+
 rocksdb_sstfilewriter_t* rocksdb_sstfilewriter_create(
     const rocksdb_envoptions_t* env, const rocksdb_options_t* io_options) {
   rocksdb_sstfilewriter_t* writer = new rocksdb_sstfilewriter_t;
@@ -9077,6 +9104,7 @@ size_t rocksdb_options_get_max_manifest_file_size(rocksdb_options_t* opt) {
 //   - include/rocksdb/advanced_options.h
 //   - include/rocksdb/block_cache_trace_writer.h
 //   - include/rocksdb/env.h
+//   - include/rocksdb/key_lookup_trace_options.h
 //   - include/rocksdb/metadata.h
 //   - include/rocksdb/options.h
 //   - include/rocksdb/table.h
@@ -10956,6 +10984,88 @@ void rocksdb_block_cache_trace_options_set_sampling_frequency(
 uint64_t rocksdb_block_cache_trace_options_get_sampling_frequency(
     rocksdb_block_cache_trace_options_t* opt) {
   return opt->rep.sampling_frequency;
+}
+
+/* KeyLookupTraceOptions */
+
+void rocksdb_key_lookup_trace_options_set_sampling_frequency(
+    rocksdb_key_lookup_trace_options_t* opt, uint64_t v) {
+  opt->rep.sampling_frequency = v;
+}
+
+uint64_t rocksdb_key_lookup_trace_options_get_sampling_frequency(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return opt->rep.sampling_frequency;
+}
+
+void rocksdb_key_lookup_trace_options_set_max_trace_file_size(
+    rocksdb_key_lookup_trace_options_t* opt, uint64_t v) {
+  opt->rep.max_trace_file_size = v;
+}
+
+uint64_t rocksdb_key_lookup_trace_options_get_max_trace_file_size(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return opt->rep.max_trace_file_size;
+}
+
+void rocksdb_key_lookup_trace_options_set_record_blocks(
+    rocksdb_key_lookup_trace_options_t* opt, unsigned char v) {
+  opt->rep.record_blocks = v;
+}
+
+unsigned char rocksdb_key_lookup_trace_options_get_record_blocks(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return opt->rep.record_blocks;
+}
+
+void rocksdb_key_lookup_trace_options_set_block_id_mode(
+    rocksdb_key_lookup_trace_options_t* opt, int v) {
+  opt->rep.block_id_mode = static_cast<decltype(opt->rep.block_id_mode)>(v);
+}
+
+int rocksdb_key_lookup_trace_options_get_block_id_mode(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return static_cast<int>(opt->rep.block_id_mode);
+}
+
+void rocksdb_key_lookup_trace_options_set_compression(
+    rocksdb_key_lookup_trace_options_t* opt, int v) {
+  opt->rep.compression = static_cast<decltype(opt->rep.compression)>(v);
+}
+
+int rocksdb_key_lookup_trace_options_get_compression(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return static_cast<int>(opt->rep.compression);
+}
+
+void rocksdb_key_lookup_trace_options_set_compression_level(
+    rocksdb_key_lookup_trace_options_t* opt, int v) {
+  opt->rep.compression_level = v;
+}
+
+int rocksdb_key_lookup_trace_options_get_compression_level(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return opt->rep.compression_level;
+}
+
+void rocksdb_key_lookup_trace_options_set_record_iterator_accesses(
+    rocksdb_key_lookup_trace_options_t* opt, unsigned char v) {
+  opt->rep.record_iterator_accesses = v;
+}
+
+unsigned char rocksdb_key_lookup_trace_options_get_record_iterator_accesses(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return opt->rep.record_iterator_accesses;
+}
+
+void rocksdb_key_lookup_trace_options_set_iterator_caller_mask(
+    rocksdb_key_lookup_trace_options_t* opt, uint16_t v) {
+  opt->rep.iterator_caller_mask = v;
+}
+
+uint16_t rocksdb_key_lookup_trace_options_get_iterator_caller_mask(
+    rocksdb_key_lookup_trace_options_t* opt) {
+  return opt->rep.iterator_caller_mask;
 }
 
 /* BlockCacheTraceWriterOptions */

@@ -738,6 +738,13 @@ class DBImpl : public DB
   using DB::EndBlockCacheTrace;
   Status EndBlockCacheTrace() override;
 
+  using DB::StartKeyLookupTrace;
+  Status StartKeyLookupTrace(const KeyLookupTraceOptions& options,
+                             const std::string& trace_file_path) override;
+
+  using DB::EndKeyLookupTrace;
+  Status EndKeyLookupTrace() override;
+
   using DB::StartIOTrace;
   Status StartIOTrace(const TraceOptions& options,
                       std::unique_ptr<TraceWriter>&& trace_writer) override;
@@ -1530,6 +1537,7 @@ class DBImpl : public DB
   std::unique_ptr<Tracer> tracer_;
   InstrumentedMutex trace_mutex_;
   BlockCacheTracer block_cache_tracer_;
+  KeyLookupTracer key_lookup_tracer_;
 
   // constant false canceled flag, used when the compaction is not manual
   const std::atomic<bool> kManualCompactionCanceledFalse_{false};

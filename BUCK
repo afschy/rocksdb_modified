@@ -256,6 +256,7 @@ cpp_library_wrapper(name="rocksdb_lib", srcs=[
         "tools/sst_dump_tool.cc",
         "trace_replay/block_cache_tracer.cc",
         "trace_replay/io_tracer.cc",
+        "trace_replay/key_lookup_tracer.cc",
         "trace_replay/trace_record.cc",
         "trace_replay/trace_record_handler.cc",
         "trace_replay/trace_record_result.cc",
@@ -5307,6 +5308,12 @@ cpp_unittest_wrapper(name="io_tracer_test",
 
 cpp_unittest_wrapper(name="iostats_context_test",
             srcs=["monitoring/iostats_context_test.cc"],
+            deps=[":rocksdb_test_lib"],
+            extra_compiler_flags=[])
+
+
+cpp_unittest_wrapper(name="key_lookup_tracer_test",
+            srcs=["trace_replay/key_lookup_tracer_test.cc"],
             deps=[":rocksdb_test_lib"],
             extra_compiler_flags=[])
 

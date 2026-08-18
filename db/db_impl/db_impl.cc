@@ -289,8 +289,9 @@ DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
   versions_.reset(new VersionSet(
       dbname_, &immutable_db_options_, mutable_db_options_, file_options_,
       table_cache_.get(), write_buffer_manager_, &write_controller_,
-      &block_cache_tracer_, io_tracer_, db_id_, db_session_id_,
-      options.daily_offpeak_time_utc, &error_handler_, read_only));
+      &block_cache_tracer_, &key_lookup_tracer_, io_tracer_, db_id_,
+      db_session_id_, options.daily_offpeak_time_utc, &error_handler_,
+      read_only));
   column_family_memtables_.reset(
       new ColumnFamilyMemTablesImpl(versions_->GetColumnFamilySet()));
 
@@ -7436,6 +7437,16 @@ Status DBImpl::StartBlockCacheTrace(
 
 Status DBImpl::EndBlockCacheTrace() {
   block_cache_tracer_.EndTrace();
+  return Status::OK();
+}
+
+Status DBImpl::StartKeyLookupTrace(const KeyLookupTraceOptions& options,
+                                   const std::string& trace_file_path) {
+  return key_lookup_tracer_.StartTrace(options, trace_file_path, env_);
+}
+
+Status DBImpl::EndKeyLookupTrace() {
+  key_lookup_tracer_.EndTrace();
   return Status::OK();
 }
 

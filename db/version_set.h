@@ -57,6 +57,7 @@
 #include "table/get_context.h"
 #include "table/multiget_context.h"
 #include "trace_replay/block_cache_tracer.h"
+#include "trace_replay/key_lookup_tracer.h"
 #include "util/autovector.h"
 #include "util/coro_utils.h"
 #include "util/hash_containers.h"
@@ -1249,6 +1250,7 @@ class VersionSet {
              WriteBufferManager* write_buffer_manager,
              WriteController* write_controller,
              BlockCacheTracer* const block_cache_tracer,
+             KeyLookupTracer* const key_lookup_tracer,
              const std::shared_ptr<IOTracer>& io_tracer,
              const std::string& db_id, const std::string& db_session_id,
              const std::string& daily_offpeak_time_utc,
@@ -1883,6 +1885,9 @@ class VersionSet {
 
   BlockCacheTracer* const block_cache_tracer_;
 
+  // Non-owning. Null when the DB does not support key lookup tracing.
+  KeyLookupTracer* const key_lookup_tracer_;
+
   // Store the IO status when Manifest is written
   IOStatus io_status_;
 
@@ -1912,6 +1917,11 @@ class VersionSet {
                            VersionEdit* edit, SequenceNumber* max_last_sequence,
                            InstrumentedMutex* mu);
 
+  // Emits key lookup trace records for every file added, removed, or trivially
+  // moved by `batch_edits`. Called only after the edits are durable and
+  // installed, so a failed manifest write never appears in the trace.
+  void RecordFileLifecycleForTrace(const autovector<VersionEdit*>& batch_edits);
+
   const bool unchanging_;
   bool closed_;
 };
@@ -1928,6 +1938,7 @@ class ReactiveVersionSet : public VersionSet {
                      const FileOptions& _file_options, Cache* table_cache,
                      WriteBufferManager* write_buffer_manager,
                      WriteController* write_controller,
+                     KeyLookupTracer* const key_lookup_tracer,
                      const std::shared_ptr<IOTracer>& io_tracer,
                      const std::string& db_id,
                      const std::string& db_session_id);

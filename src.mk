@@ -244,6 +244,7 @@ LIB_SOURCES =                                                   \
   trace_replay/trace_record.cc                                  \
   trace_replay/trace_replay.cc                                  \
   trace_replay/block_cache_tracer.cc                            \
+  trace_replay/key_lookup_tracer.cc                             \
   trace_replay/io_tracer.cc                                     \
   util/async_file_reader.cc					                            \
   util/auto_tune_compressor.cc                                           \
@@ -628,6 +629,7 @@ TEST_MAIN_SOURCES =                                                     \
   tools/sst_dump_test.cc                                                \
   tools/trace_analyzer_test.cc                                          \
   trace_replay/block_cache_tracer_test.cc                               \
+  trace_replay/key_lookup_tracer_test.cc                                \
   trace_replay/io_tracer_test.cc                                        \
   util/autovector_test.cc                                               \
   util/bloom_test.cc                                                    \

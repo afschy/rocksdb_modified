@@ -1828,6 +1828,7 @@ class RecoveryTestHelper {
         test->dbname_, &db_options, MutableDBOptions{options}, file_options,
         table_cache.get(), &write_buffer_manager, &write_controller,
         /*block_cache_tracer=*/nullptr,
+        /*key_lookup_tracer=*/nullptr,
         /*io_tracer=*/nullptr, /*db_id=*/"", /*db_session_id=*/"",
         options.daily_offpeak_time_utc,
         /*error_handler=*/nullptr, /*read_only=*/false));

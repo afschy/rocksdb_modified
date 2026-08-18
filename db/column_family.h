@@ -43,6 +43,7 @@ class CompactionPicker;
 class Compaction;
 class InternalKey;
 class InternalStats;
+class KeyLookupTracer;
 class ColumnFamilyData;
 class DBImpl;
 class LogBuffer;
@@ -832,6 +833,14 @@ class ColumnFamilySet {
                   bool fast_sst_open = false);
   ~ColumnFamilySet();
 
+  // Key lookup tracing. Set by VersionSet immediately after construction and
+  // before any column family exists, so that every ColumnFamilyData created
+  // later can hand it to its TableCache.
+  void SetKeyLookupTracer(KeyLookupTracer* tracer) {
+    key_lookup_tracer_ = tracer;
+  }
+  KeyLookupTracer* key_lookup_tracer() const { return key_lookup_tracer_; }
+
   ColumnFamilyData* GetDefault() const;
   // GetColumnFamily() calls return nullptr if column family is not found
   ColumnFamilyData* GetColumnFamily(uint32_t id) const;
@@ -913,6 +922,10 @@ class ColumnFamilySet {
   WriteBufferManager* write_buffer_manager_;
   WriteController* write_controller_;
   BlockCacheTracer* const block_cache_tracer_;
+  // Set once by VersionSet before any column family is created, so it needs no
+  // synchronization. Null when key lookup tracing is not wired up, e.g. in
+  // repair and ldb contexts.
+  KeyLookupTracer* key_lookup_tracer_ = nullptr;
   std::shared_ptr<IOTracer> io_tracer_;
   const std::string& db_id_;
   std::string db_session_id_;

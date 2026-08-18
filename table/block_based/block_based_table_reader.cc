@@ -810,7 +810,8 @@ Status BlockBasedTable::Open(
     size_t max_file_size_for_l0_meta_pin, const std::string& cur_db_session_id,
     uint64_t cur_file_num, UniqueId64x2 expected_unique_id,
     const bool user_defined_timestamps_persisted,
-    const bool avoid_shared_metadata_cache, BlobSource* blob_source) {
+    const bool avoid_shared_metadata_cache, BlobSource* blob_source,
+    KeyLookupTracer* key_lookup_tracer) {
   table_reader->reset();
 
   Status s;
@@ -887,6 +888,8 @@ Status BlockBasedTable::Open(
   rep->file = std::move(file);
   rep->footer = footer;
   rep->blob_source_ = blob_source;
+  rep->key_lookup_tracer = key_lookup_tracer;
+  rep->file_number = cur_file_num;
 
   // For fully portable/stable cache keys, we need to read the properties
   // block before setting up cache keys. TODO: consider setting up a bootstrap
@@ -2159,6 +2162,81 @@ InternalIteratorBase<IndexValue>* BlockBasedTable::NewIndexIterator(
   return rep_->index_reader->NewIterator(read_options, disable_prefix_seek,
                                          input_iter, get_context,
                                          lookup_context);
+}
+
+void BlockBasedTable::EnsureDataBlockOffsetsBuilt(
+    const ReadOptions& read_options) const {
+  // Walk the index outside the lock: this performs I/O, and holding the mutex
+  // across it would stall every concurrent reader of this table.
+  ReadOptions build_ro;
+  // Do not pollute the block cache with blocks this walk pulls in.
+  build_ro.fill_cache = false;
+  build_ro.verify_checksums = read_options.verify_checksums;
+  // kUncategorized so that this walk does not inject fake kUserGet records
+  // into a concurrent block cache trace.
+  BlockCacheLookupContext ctx(TableReaderCaller::kUncategorized);
+  IndexBlockIter iiter_on_stack;
+  auto index_iter =
+      NewIndexIterator(build_ro, /*disable_prefix_seek=*/true, &iiter_on_stack,
+                       /*get_context=*/nullptr, &ctx);
+  std::unique_ptr<InternalIteratorBase<IndexValue>> iiter_unique_ptr;
+  if (index_iter != &iiter_on_stack) {
+    iiter_unique_ptr.reset(index_iter);
+  }
+
+  std::vector<uint64_t> offsets;
+  for (index_iter->SeekToFirst(); index_iter->Valid(); index_iter->Next()) {
+    const uint64_t block_offset = index_iter->value().handle.offset();
+    // Index order equals offset order for data blocks, so no sort is needed.
+    assert(offsets.empty() || offsets.back() < block_offset);
+    offsets.push_back(block_offset);
+  }
+  const bool ok = index_iter->status().ok();
+
+  std::lock_guard<std::mutex> lock(rep_->data_block_offsets_mutex);
+  if (rep_->offset_map_state.load(std::memory_order_relaxed) !=
+      Rep::OffsetMapState::kUnbuilt) {
+    // Another thread won the race; keep its result.
+    return;
+  }
+  if (ok) {
+    rep_->data_block_offsets = std::move(offsets);
+    // Release so that a reader observing kReady also observes the vector.
+    rep_->offset_map_state.store(Rep::OffsetMapState::kReady,
+                                 std::memory_order_release);
+  } else {
+    rep_->offset_map_state.store(Rep::OffsetMapState::kFailed,
+                                 std::memory_order_release);
+  }
+}
+
+uint64_t BlockBasedTable::BlockIdForTrace(const ReadOptions& read_options,
+                                          uint64_t offset,
+                                          KeyLookupBlockIdMode mode) const {
+  if (mode == KeyLookupBlockIdMode::kOffset) {
+    return offset;
+  }
+  auto state = rep_->offset_map_state.load(std::memory_order_acquire);
+  if (state == Rep::OffsetMapState::kUnbuilt) {
+    if (read_options.read_tier == kBlockCacheTier) {
+      // The caller asked for no I/O, and building the map walks the index.
+      // Report the sentinel rather than break that contract for a trace.
+      return std::numeric_limits<uint64_t>::max();
+    }
+    EnsureDataBlockOffsetsBuilt(read_options);
+    state = rep_->offset_map_state.load(std::memory_order_acquire);
+  }
+  if (state != Rep::OffsetMapState::kReady) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  // Safe without the mutex: data_block_offsets is immutable once kReady.
+  const auto& offsets = rep_->data_block_offsets;
+  auto it = std::lower_bound(offsets.begin(), offsets.end(), offset);
+  if (it == offsets.end() || *it != offset) {
+    // An explicit sentinel beats a plausible but wrong ordinal.
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(it - offsets.begin());
 }
 
 // TODO?

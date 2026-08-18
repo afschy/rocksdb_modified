@@ -48,9 +48,24 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
         is_last_level_(table->IsLastLevel()),
         block_iter_points_to_real_block_(false) {
     multi_scan_status_.PermitUncheckedError();
+    KeyLookupTracer* klt = table_->get_rep()->key_lookup_tracer;
+    if (UNLIKELY(klt != nullptr && klt->is_tracing_enabled() &&
+                 klt->ShouldTraceIterator(caller))) {
+      klt_ = klt;
+      klt_iter_id_ = klt->NextIterId();
+      klt_session_ = klt->session_id();
+    }
   }
 
-  ~BlockBasedTableIterator() override { ClearBlockHandles(); }
+  ~BlockBasedTableIterator() override {
+    // Emit whatever this iterator buffered but did not fill a record with.
+    // Tracing may have been stopped since construction, which FlushTracedBlocks
+    // tolerates.
+    if (UNLIKELY(klt_ != nullptr)) {
+      FlushTracedBlocks();
+    }
+    ClearBlockHandles();
+  }
 
   void Seek(const Slice& target) override;
   void SeekForPrev(const Slice& target) override;
@@ -318,6 +333,27 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
     return multi_scan_read_set_ && multi_scan_index_iter_ &&
            multi_scan_index_iter_->scan_opts()->reverse;
   }
+
+  // Key lookup tracing. Records this iterator's data block accesses, grouped
+  // per file: one BlockBasedTableIterator serves exactly one SST, so the
+  // iterator itself is the grouping unit and owns the buffer.
+  //
+  // Records the access the caller is about to make. `uncomp_bytes` is filled
+  // in by FinishTracedBlock() once the block materializes.
+  void TraceBlockAccess(const BlockHandle& handle);
+  // Fills in the materialized size of the access recorded by the most recent
+  // TraceBlockAccess(), and flushes if the buffer has filled up.
+  void FinishTracedBlock();
+  // Emits one record for everything buffered so far and clears the buffer.
+  void FlushTracedBlocks();
+
+  // Non-null only while this iterator is being traced.
+  KeyLookupTracer* klt_ = nullptr;
+  uint64_t klt_iter_id_ = 0;
+  // The trace session this iterator's ids belong to. See
+  // KeyLookupTracer::session_id().
+  uint64_t klt_session_ = 0;
+  KeyLookupIterBlocks klt_blocks_;
 
   const BlockBasedTable* table_;
   const ReadOptions& read_options_;

@@ -11,7 +11,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "cache/cache_entry_roles.h"
 #include "cache/cache_key.h"
@@ -20,6 +22,7 @@
 #include "db/range_tombstone_fragmenter.h"
 #include "db/seqno_to_time_mapping.h"
 #include "file/filename.h"
+#include "rocksdb/key_lookup_trace_options.h"
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/table_properties.h"
 #include "table/block_based/block.h"
@@ -36,6 +39,7 @@
 #include "table/table_reader.h"
 #include "table/two_level_iterator.h"
 #include "trace_replay/block_cache_tracer.h"
+#include "trace_replay/key_lookup_tracer.h"
 #include "util/aligned_buffer.h"
 #include "util/atomic.h"
 #include "util/cast_util.h"
@@ -175,7 +179,8 @@ class BlockBasedTable : public TableReader, public SameFileBlobReader {
       UniqueId64x2 expected_unique_id = {},
       const bool user_defined_timestamps_persisted = true,
       bool avoid_shared_metadata_cache = false,
-      BlobSource* blob_source = nullptr);
+      BlobSource* blob_source = nullptr,
+      KeyLookupTracer* key_lookup_tracer = nullptr);
 
   bool PrefixRangeMayMatch(const Slice& internal_key,
                            const ReadOptions& read_options,
@@ -495,6 +500,17 @@ class BlockBasedTable : public TableReader, public SameFileBlobReader {
   Rep* get_rep() { return rep_; }
   const Rep* get_rep() const { return rep_; }
 
+  // Maps a data block's byte offset in this file to the id recorded in a key
+  // lookup trace: the offset itself in kOffset mode, or the block's zero-based
+  // ordinal among this file's data blocks in kOrdinal mode. kOrdinal needs a
+  // per-file map of data block offsets, which is built on first use and cached
+  // on Rep. Returns UINT64_MAX if the ordinal cannot be determined, so that a
+  // trace never carries a plausible but wrong ordinal.
+  //
+  // Public because BlockBasedTableIterator records its own block accesses.
+  uint64_t BlockIdForTrace(const ReadOptions& read_options, uint64_t offset,
+                           KeyLookupBlockIdMode mode) const;
+
   // input_iter: if it is not null, update this one and return it as Iterator
   DECLARE_SYNC_AND_ASYNC_TEMPLATE_CONST(
       template <typename TBlockIter>, TBlockIter*, NewDataBlockIterator,
@@ -609,6 +625,9 @@ class BlockBasedTable : public TableReader, public SameFileBlobReader {
       const ReadOptions& read_options, bool disable_prefix_seek,
       IndexBlockIter* input_iter, GetContext* get_context,
       BlockCacheLookupContext* lookup_context) const;
+
+  // Builds rep_->data_block_offsets if it is not built yet. Performs I/O.
+  void EnsureDataBlockOffsetsBuilt(const ReadOptions& read_options) const;
 
   template <typename TBlocklike>
   Cache::Priority GetCachePriority() const;
@@ -891,6 +910,16 @@ struct BlockBasedTable::Rep {
   // embedded reads fall back to a direct (uncached) read.
   BlobSource* blob_source_ = nullptr;
 
+  // Key lookup tracing. Null when tracing is not wired up for this reader,
+  // e.g. SstFileReader, sst_dump, repair. Owned by the DB and outlives this
+  // reader.
+  KeyLookupTracer* key_lookup_tracer = nullptr;
+
+  // Number of the SST file this reader serves, needed to identify the file in
+  // key lookup trace records. Rep does not otherwise keep it: base_cache_key
+  // folds it together with the DB session id.
+  uint64_t file_number = 0;
+
   // Whether block checksums in metadata blocks were verified on open.
   // This is only to mostly maintain current dubious behavior of VerifyChecksum
   // with respect to index blocks, but only when the checksum was previously
@@ -976,6 +1005,20 @@ struct BlockBasedTable::Rep {
 #endif  // ROCKSDB_MALLOC_USABLE_SIZE
     return usage;
   }
+
+  enum class OffsetMapState : uint8_t { kUnbuilt, kReady, kFailed };
+
+  // Offsets of this file's data blocks, sorted ascending. Used only to turn a
+  // block offset into a zero-based block ordinal for key lookup tracing, and
+  // so built lazily on the first traced access in kOrdinal mode.
+  //
+  // `data_block_offsets` is written once, under the mutex, before
+  // `offset_map_state` becomes kReady. Readers that observe kReady with
+  // acquire ordering may then read it without taking the mutex.
+  mutable std::mutex data_block_offsets_mutex;
+  mutable std::vector<uint64_t> data_block_offsets;
+  mutable std::atomic<OffsetMapState> offset_map_state{
+      OffsetMapState::kUnbuilt};
 };
 
 // This is an adapter class for `WritableFile` to be used for `std::ostream`.

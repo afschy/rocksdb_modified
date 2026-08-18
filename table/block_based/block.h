@@ -450,6 +450,16 @@ class BlockIter : public InternalIteratorBase<TValue> {
 
   Cache::Handle* cache_handle() { return cache_handle_; }
 
+  // Size of the whole uncompressed block backing this iterator, i.e. its
+  // footprint in the block cache. Recorded for key lookup tracing, which needs
+  // it separately from the compressed size read off disk. Not derivable from
+  // restarts_ and num_restarts_, since a hash index suffix and a footer may
+  // have been stripped before those were computed. 0 if never set.
+  void SetBlockSize(size_t block_size) {
+    block_size_ = static_cast<uint32_t>(block_size);
+  }
+  uint32_t block_size() const { return block_size_; }
+
  protected:
   InternalKeyComparator icmp_;
   const char* data_;       // underlying block contents
@@ -468,6 +478,8 @@ class BlockIter : public InternalIteratorBase<TValue> {
   // Cached result of GetKeysEndOffset(). Computed once in InitializeBase()
   // since values_section_, data_, and restarts_ do not change afterward.
   uint32_t keys_end_offset_{0};
+  // See SetBlockSize().
+  uint32_t block_size_{0};
   // Raw key from block.
   IterKey raw_key_;
   // Buffer for key data when global seqno assignment is enabled.

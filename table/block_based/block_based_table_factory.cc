@@ -627,7 +627,7 @@ Status BlockBasedTableFactory::NewTableReader(
       table_reader_options.unique_id,
       table_reader_options.user_defined_timestamps_persisted,
       table_reader_options.avoid_shared_metadata_cache,
-      table_reader_options.blob_source);
+      table_reader_options.blob_source, table_reader_options.key_lookup_tracer);
 }
 
 TableBuilder* BlockBasedTableFactory::NewTableBuilder(

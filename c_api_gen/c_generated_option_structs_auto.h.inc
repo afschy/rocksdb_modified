@@ -10,6 +10,7 @@
 //   - include/rocksdb/advanced_options.h
 //   - include/rocksdb/block_cache_trace_writer.h
 //   - include/rocksdb/env.h
+//   - include/rocksdb/key_lookup_trace_options.h
 //   - include/rocksdb/metadata.h
 //   - include/rocksdb/options.h
 //   - include/rocksdb/table.h
@@ -686,6 +687,71 @@ rocksdb_block_cache_trace_options_set_sampling_frequency(
 extern ROCKSDB_LIBRARY_API uint64_t
 rocksdb_block_cache_trace_options_get_sampling_frequency(
     rocksdb_block_cache_trace_options_t* opt);
+
+/* KeyLookupTraceOptions */
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_sampling_frequency(
+    rocksdb_key_lookup_trace_options_t* opt, uint64_t v);
+
+extern ROCKSDB_LIBRARY_API uint64_t
+rocksdb_key_lookup_trace_options_get_sampling_frequency(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_max_trace_file_size(
+    rocksdb_key_lookup_trace_options_t* opt, uint64_t v);
+
+extern ROCKSDB_LIBRARY_API uint64_t
+rocksdb_key_lookup_trace_options_get_max_trace_file_size(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_record_blocks(
+    rocksdb_key_lookup_trace_options_t* opt, unsigned char v);
+
+extern ROCKSDB_LIBRARY_API unsigned char
+rocksdb_key_lookup_trace_options_get_record_blocks(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_block_id_mode(
+    rocksdb_key_lookup_trace_options_t* opt, int v);
+
+extern ROCKSDB_LIBRARY_API int
+rocksdb_key_lookup_trace_options_get_block_id_mode(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_compression(
+    rocksdb_key_lookup_trace_options_t* opt, int v);
+
+extern ROCKSDB_LIBRARY_API int rocksdb_key_lookup_trace_options_get_compression(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_compression_level(
+    rocksdb_key_lookup_trace_options_t* opt, int v);
+
+extern ROCKSDB_LIBRARY_API int
+rocksdb_key_lookup_trace_options_get_compression_level(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_record_iterator_accesses(
+    rocksdb_key_lookup_trace_options_t* opt, unsigned char v);
+
+extern ROCKSDB_LIBRARY_API unsigned char
+rocksdb_key_lookup_trace_options_get_record_iterator_accesses(
+    rocksdb_key_lookup_trace_options_t* opt);
+
+extern ROCKSDB_LIBRARY_API void
+rocksdb_key_lookup_trace_options_set_iterator_caller_mask(
+    rocksdb_key_lookup_trace_options_t* opt, uint16_t v);
+
+extern ROCKSDB_LIBRARY_API uint16_t
+rocksdb_key_lookup_trace_options_get_iterator_caller_mask(
+    rocksdb_key_lookup_trace_options_t* opt);
 
 /* BlockCacheTraceWriterOptions */
 
