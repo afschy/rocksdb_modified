@@ -95,10 +95,14 @@ class KeyLookupTraceWriter {
                      const KeyLookupBlockAccesses& blocks,
                      uint64_t max_trace_file_size);
 
-  // Appends one file lifecycle record. `to_level` is written only for kMove.
+  // Appends one file lifecycle record. `num_entries` and `file_size` describe
+  // the file itself; 0 means the caller could not recover that number, which
+  // only really happens for `num_entries`. `to_level` is written only for
+  // kMove.
   Status WriteFileLifecycle(uint64_t seq, uint64_t timestamp_us,
                             KeyLookupFileOp op, uint32_t cf_id,
-                            uint64_t file_number, uint32_t level,
+                            uint64_t file_number, uint64_t num_entries,
+                            uint64_t file_size, uint32_t level,
                             uint32_t to_level, uint64_t max_trace_file_size);
 
   // Appends one iterator access record, covering the blocks one table iterator
@@ -210,6 +214,7 @@ class KeyLookupTracer {
 
   Status WriteFileLifecycle(uint64_t timestamp_us, KeyLookupFileOp op,
                             uint32_t cf_id, uint64_t file_number,
+                            uint64_t num_entries, uint64_t file_size,
                             uint32_t level, uint32_t to_level);
 
   Status WriteIteratorAccess(uint64_t seq, uint64_t timestamp_us,

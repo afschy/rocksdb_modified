@@ -120,7 +120,7 @@ Status KeyLookupTraceWriter::NewWritableFile(
   }
 
   line_buffer_.clear();
-  line_buffer_.append("# rocksdb_key_lookup_trace v2 block_id_mode=");
+  line_buffer_.append("# rocksdb_key_lookup_trace v3 block_id_mode=");
   line_buffer_.append(BlockIdModeName(trace_options.block_id_mode));
   line_buffer_.append(" size_unit=bytes rocksdb=");
   AppendNumberTo(&line_buffer_, ROCKSDB_MAJOR);
@@ -277,8 +277,8 @@ Status KeyLookupTraceWriter::WriteLookup(uint64_t seq, uint64_t timestamp_us,
 
 Status KeyLookupTraceWriter::WriteFileLifecycle(
     uint64_t seq, uint64_t timestamp_us, KeyLookupFileOp op, uint32_t cf_id,
-    uint64_t file_number, uint32_t level, uint32_t to_level,
-    uint64_t max_trace_file_size) {
+    uint64_t file_number, uint64_t num_entries, uint64_t file_size,
+    uint32_t level, uint32_t to_level, uint64_t max_trace_file_size) {
   if (!file_ || truncated_) {
     return Status::OK();
   }
@@ -293,6 +293,10 @@ Status KeyLookupTraceWriter::WriteFileLifecycle(
   AppendNumberTo(&line_buffer_, cf_id);
   line_buffer_.push_back(',');
   AppendNumberTo(&line_buffer_, file_number);
+  line_buffer_.push_back(',');
+  AppendNumberTo(&line_buffer_, num_entries);
+  line_buffer_.push_back(',');
+  AppendNumberTo(&line_buffer_, file_size);
   line_buffer_.push_back(',');
   AppendNumberTo(&line_buffer_, level);
   if (op == KeyLookupFileOp::kMove) {
@@ -416,7 +420,9 @@ Status KeyLookupTracer::WriteLookup(uint64_t seq, uint64_t timestamp_us,
 
 Status KeyLookupTracer::WriteFileLifecycle(uint64_t timestamp_us,
                                            KeyLookupFileOp op, uint32_t cf_id,
-                                           uint64_t file_number, uint32_t level,
+                                           uint64_t file_number,
+                                           uint64_t num_entries,
+                                           uint64_t file_size, uint32_t level,
                                            uint32_t to_level) {
   if (!writer_.load()) {
     return Status::OK();
@@ -430,7 +436,7 @@ Status KeyLookupTracer::WriteFileLifecycle(uint64_t timestamp_us,
   // match the order they appear in the file.
   const uint64_t seq = NextSeq();
   return writer->WriteFileLifecycle(seq, timestamp_us, op, cf_id, file_number,
-                                    level, to_level,
+                                    num_entries, file_size, level, to_level,
                                     trace_options_.max_trace_file_size);
 }
 

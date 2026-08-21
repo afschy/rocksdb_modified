@@ -31,8 +31,8 @@ type field. All three are interleaved in one file and totally ordered by a
 trace-wide sequence number.
 
 ```
-# rocksdb_key_lookup_trace v2 block_id_mode=ordinal size_unit=bytes rocksdb=11.9
-F,1,1755212345678000,create,0,1201,0
+# rocksdb_key_lookup_trace v3 block_id_mode=ordinal size_unit=bytes rocksdb=11.9
+F,1,1755212345678000,create,0,1201,5000,4194304,0
 G,7,1755212345678901,42,0,1,3,0:1201:0|1:1150:0:4/8/4101/8192:5/9/4101/8192|2:1043:1:12/10/2048/4096
 A,11,1755212345679500,0,10,3,2,1043,1,2,0/12/4101/8192:1/13/4101/8192
 ```
@@ -67,8 +67,14 @@ comma.
 #### `F` -- one change to the live file set
 
 ```
-F,seq,timestamp_us,create|delete|move,cf_id,file_number,level[,to_level]
+F,seq,timestamp_us,create|delete|move,cf_id,file_number,num_entries,file_size,level[,to_level]
 ```
+
+`num_entries` is the key count the file was built with and `file_size` its size
+on disk in bytes. They describe the file the record names, so a `move` repeats
+the values its `create` carried. `file_size` is always exact. `num_entries` is
+0 when RocksDB has not read the file's table properties yet, which in practice
+is rare but is not something a parser can assume away; see 1.11.
 
 `to_level` is present only for `move`, where `level` is the source level.
 
@@ -111,6 +117,17 @@ Common to all record types:
 | `final_result` | How the whole request ended; see 1.4 |
 | `num_probes` | Number of probes in the last field |
 | probe list | `\|`-separated, empty when `num_probes` is 0 |
+
+`F` records:
+
+| Field | Meaning |
+|---|---|
+| `cf_id` | Column family id |
+| `file_number` | The SST's number, stable across a trivial move |
+| `num_entries` | Internal entries the file was built with, tombstones and merge operands included. 0 means unknown; see 1.11 |
+| `file_size` | The SST's size on disk in bytes. Always exact |
+| `level` | The file's level, or for a `move` the level it came from |
+| `to_level` | Present only on a `move` |
 
 `A` records:
 
@@ -312,8 +329,9 @@ for line in open_trace(path):
             level, file_number, outcome = (int(p) for p in parts[:3])
             blocks = [parse_block(b) for b in parts[3:]]
     elif fields[0] == "F":
-        # fields[7] (to_level) is present only for a move
-        _, seq, ts, op, cf_id, file_number, level = fields[:7]
+        # fields[9] (to_level) is present only for a move
+        (_, seq, ts, op, cf_id, file_number, num_entries, file_size,
+         level) = fields[:9]
     elif fields[0] == "A":
         (_, seq, ts, cf_id, caller, iter_id, level, file_number, no_insert,
          num_blocks, block_list) = fields
@@ -377,6 +395,22 @@ reader. That is what `no_insert` exists to let you model. Whether compaction
 should touch the cache at all is a live question -- `use_block_cache_for_lookup`
 is not user-exposed, so today it cannot be turned off -- and it cannot be
 studied with a trace that omits compaction.
+
+**`num_entries` can be 0, and 0 means "unknown", not "empty".** `file_size` is
+known the moment the file is written, but `num_entries` is not: RocksDB fills
+`FileMetaData::num_entries` in lazily, from the SST's table properties, in
+`Version::PrepareAppend`, and caps that at `kMaxInitCount` = 20 files per
+version to bound the I/O (the cap is lifted when `max_open_files == -1`). The
+tracer reads whatever is there and never forces the load, so a file the budget
+did not reach is reported with `num_entries = 0`. In practice the budget
+scans from L0 upward, which is exactly where new files are: on a multi-level
+200k-key workload at default `max_open_files`, 0 of 946 `F` records came out
+unset. Treat it as reliable but check for 0 rather than dividing by it.
+
+**`num_entries` counts internal entries, not live keys.** Tombstones and merge
+operands are included, so it is the count the file was *built* with. Summing it
+over the live file set overcounts the DB's logical key count by whatever has
+not yet been compacted away.
 
 **Deleting a file does not evict its cached blocks.** RocksDB does not
 proactively drop blocks belonging to a deleted SST; they occupy the cache until
@@ -677,9 +711,29 @@ through it.
 
 Trivial move detection: a file number present in both `GetDeletedFiles()` and
 `GetNewFiles()` of one `VersionEdit` was relabeled, not rewritten. The
-implementation builds a map of new file numbers, emits `move` for the
-intersection while erasing it from the map, `delete` for the rest of the
-deleted set, and `create` for whatever remains in the map.
+implementation builds a map of new file numbers to their metadata, emits `move`
+for the intersection while erasing it from the map, `delete` for the rest of
+the deleted set, and `create` for whatever remains in the map.
+
+Per-file stats: both come from `FileMetaData`, but not from the copy the
+`VersionEdit` carries. That copy is taken when the file is written, and at that
+moment `num_entries` is still 0 -- RocksDB fills it in afterwards, from the
+file's table properties, in `Version::PrepareAppend`. So `create` and `move`
+read the *live* metadata out of the version that was just installed, via
+`VersionStorageInfo::GetFileMetaDataByNumber()`, and fall back to the edit's
+copy when the file is not there. Reading the edit's copy directly is the
+obvious implementation and it reports `num_entries = 0` on every create.
+
+`GetDeletedFiles()` holds only `(level, file_number)`, so a deleted file's
+metadata has to come out of the version it is being dropped *from* -- which is
+why `CollectDeletedFileStatsForTrace()` runs before the `AppendVersion` loop
+while `RecordFileLifecycleForTrace()` runs after it. A file that lookup misses,
+which means it was created and deleted inside the same batch, is still
+recorded, with both stats 0; the delete matters to a simulator whether or not
+the size is known.
+
+Nothing here forces a table-properties load, so the feature adds no I/O: it
+reports what `PrepareAppend` had already read, and 0 when it had not.
 
 This is the cheapest feature here -- a handful of records per compaction, on a
 cold path -- and per byte the most useful, because it is the only way to see
@@ -838,8 +892,9 @@ the fixtures `FlushToLevel`, `FlushSpanningFile` (writes one file spanning
 **`KeyLookupTracerTest`** -- format level, no DB. Exact line assertions for all
 three record types, including that a zero-probe `G` line ends with a comma,
 that a zero-block probe has exactly three colon-separated fields with no
-trailing colon, and that `to_level` appears only on a `move`. All five
-`outcome` and all five `final_result` values. Truncation appending `#
+trailing colon, that `to_level` appears only on a `move`, and that
+`num_entries` and `file_size` sit between the file number and the level. All
+five `outcome` and all five `final_result` values. Truncation appending `#
 truncated` exactly once. Sampling at frequency 4 yielding exactly one in four.
 The caller mask, and that the master switch overrides it. The not-tracing and
 double-start paths.
@@ -899,6 +954,9 @@ File lifecycle: `FlushEmitsCreateRecord`,
 `TrivialMoveEmitsMoveNotDeleteAndCreate` -- which asserts the whole chain,
 since `MoveFilesToLevel(2)` walks the file down one level at a time and so
 reaching L2 is two trivial moves, with the file keeping its number throughout.
+All three also check the per-file stats: the entry count matches the number of
+keys flushed and the size is nonzero, on deletes as well as creates, and a
+trivially moved file reports the same size before and after the move.
 
 Iterator accesses: `IteratorEmitsGroupedAccesses`,
 `LongScanEmitsContinuationRecords` (a scan crossing `kIterFlushThreshold` emits

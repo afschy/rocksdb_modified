@@ -1917,10 +1917,26 @@ class VersionSet {
                            VersionEdit* edit, SequenceNumber* max_last_sequence,
                            InstrumentedMutex* mu);
 
+  // What an `F` trace record reports about the file it names.
+  struct TracedFileStats {
+    uint64_t num_entries = 0;
+    uint64_t file_size = 0;
+  };
+  using TracedFileStatsMap = UnorderedMap<uint64_t, TracedFileStats>;
+
+  // Collects the stats of every file `batch_edits` removes. A deleted file's
+  // metadata lives only in the version it is being dropped from, so this must
+  // run before AppendVersion installs the replacements. Added files are the
+  // other way around: their stats are read from the version just installed.
+  void CollectDeletedFileStatsForTrace(
+      const autovector<VersionEdit*>& batch_edits,
+      TracedFileStatsMap* deleted_stats) const;
+
   // Emits key lookup trace records for every file added, removed, or trivially
   // moved by `batch_edits`. Called only after the edits are durable and
   // installed, so a failed manifest write never appears in the trace.
-  void RecordFileLifecycleForTrace(const autovector<VersionEdit*>& batch_edits);
+  void RecordFileLifecycleForTrace(const autovector<VersionEdit*>& batch_edits,
+                                   const TracedFileStatsMap& deleted_stats);
 
   const bool unchanging_;
   bool closed_;

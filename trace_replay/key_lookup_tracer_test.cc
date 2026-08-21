@@ -60,6 +60,8 @@ struct ParsedFileRecord {
   std::string op;
   uint32_t cf_id = 0;
   uint64_t file_number = 0;
+  uint64_t num_entries = 0;
+  uint64_t file_size = 0;
   uint32_t level = 0;
   uint32_t to_level = 0;
   bool has_to_level = false;
@@ -164,16 +166,18 @@ ParsedRecord ParseGetRecord(const std::vector<std::string>& fields) {
 
 ParsedFileRecord ParseFileRecord(const std::vector<std::string>& fields) {
   ParsedFileRecord record;
-  EXPECT_GE(fields.size(), 7u);
-  EXPECT_LE(fields.size(), 8u);
+  EXPECT_GE(fields.size(), 9u);
+  EXPECT_LE(fields.size(), 10u);
   record.seq = ParseUint64(fields[1]);
   record.timestamp_us = ParseUint64(fields[2]);
   record.op = fields[3];
   record.cf_id = static_cast<uint32_t>(ParseUint64(fields[4]));
   record.file_number = ParseUint64(fields[5]);
-  record.level = static_cast<uint32_t>(ParseUint64(fields[6]));
-  if (fields.size() == 8) {
-    record.to_level = static_cast<uint32_t>(ParseUint64(fields[7]));
+  record.num_entries = ParseUint64(fields[6]);
+  record.file_size = ParseUint64(fields[7]);
+  record.level = static_cast<uint32_t>(ParseUint64(fields[8]));
+  if (fields.size() == 10) {
+    record.to_level = static_cast<uint32_t>(ParseUint64(fields[9]));
     record.has_to_level = true;
   }
   return record;
@@ -338,14 +342,14 @@ TEST_F(KeyLookupTracerTest, HeaderLine) {
   std::vector<std::string> lines = Trace(options, [](KeyLookupTracer*) {});
   ASSERT_EQ(1u, lines.size());
   ASSERT_EQ(0u, lines[0].find(
-                    "# rocksdb_key_lookup_trace v2 block_id_mode=ordinal "
+                    "# rocksdb_key_lookup_trace v3 block_id_mode=ordinal "
                     "size_unit=bytes rocksdb="));
 
   options.block_id_mode = KeyLookupBlockIdMode::kOffset;
   lines = Trace(options, [](KeyLookupTracer*) {});
   ASSERT_EQ(1u, lines.size());
   ASSERT_EQ(0u, lines[0].find(
-                    "# rocksdb_key_lookup_trace v2 block_id_mode=offset "
+                    "# rocksdb_key_lookup_trace v3 block_id_mode=offset "
                     "size_unit=bytes rocksdb="));
 }
 
@@ -470,17 +474,17 @@ TEST_F(KeyLookupTracerTest, FileLifecycleFormat) {
   std::vector<std::string> lines =
       Trace(KeyLookupTraceOptions(), [](KeyLookupTracer* tracer) {
         ASSERT_OK(tracer->WriteFileLifecycle(111, KeyLookupFileOp::kCreate, 2,
-                                             1201, 0, 0));
+                                             1201, 5000, 4194304, 0, 0));
         ASSERT_OK(tracer->WriteFileLifecycle(222, KeyLookupFileOp::kDelete, 2,
-                                             1150, 3, 0));
+                                             1150, 4211, 3211264, 3, 0));
         // to_level is written only for a move.
         ASSERT_OK(tracer->WriteFileLifecycle(333, KeyLookupFileOp::kMove, 2,
-                                             1043, 1, 2));
+                                             1043, 90, 65536, 1, 2));
       });
   ASSERT_EQ(4u, lines.size());
-  ASSERT_EQ("F,1,111,create,2,1201,0", lines[1]);
-  ASSERT_EQ("F,2,222,delete,2,1150,3", lines[2]);
-  ASSERT_EQ("F,3,333,move,2,1043,1,2", lines[3]);
+  ASSERT_EQ("F,1,111,create,2,1201,5000,4194304,0", lines[1]);
+  ASSERT_EQ("F,2,222,delete,2,1150,4211,3211264,3", lines[2]);
+  ASSERT_EQ("F,3,333,move,2,1043,90,65536,1,2", lines[3]);
 }
 
 TEST_F(KeyLookupTracerTest, IteratorAccessFormat) {
@@ -1141,6 +1145,9 @@ TEST_F(KeyLookupTraceDBTest, FlushEmitsCreateRecord) {
   ASSERT_EQ(0u, trace.files[0].level);
   ASSERT_FALSE(trace.files[0].has_to_level);
   ASSERT_GT(trace.files[0].seq, 0u);
+  // One Put flushed, so one entry, in a file that is not empty.
+  ASSERT_EQ(1u, trace.files[0].num_entries);
+  ASSERT_GT(trace.files[0].file_size, 0u);
   std::vector<uint64_t> at_l0 = FileNumbersAtLevel(0);
   ASSERT_EQ(1u, at_l0.size());
   ASSERT_EQ(at_l0[0], trace.files[0].file_number);
@@ -1173,6 +1180,11 @@ TEST_F(KeyLookupTraceDBTest, TrivialMoveEmitsMoveNotDeleteAndCreate) {
     ASSERT_TRUE(record.has_to_level);
     ASSERT_EQ(expected_from + 1, record.to_level);
     expected_from = record.to_level;
+    // The file was relabeled, not rewritten, so its stats are those of the
+    // two keys it was flushed with and are the same on both records.
+    ASSERT_EQ(2u, record.num_entries);
+    ASSERT_EQ(trace.files[0].file_size, record.file_size);
+    ASSERT_GT(record.file_size, 0u);
   }
   ASSERT_EQ(2u, expected_from);
   // Same file number still live, at the new level.
@@ -1202,7 +1214,13 @@ TEST_F(KeyLookupTraceDBTest, RewritingCompactionEmitsDeleteAndCreate) {
   std::vector<uint64_t> created;
   for (const ParsedFileRecord& record : trace.files) {
     ASSERT_NE("move", record.op);
+    // A deleted file's stats come from the version it is dropped from, so a
+    // delete carries them just as a create does.
+    ASSERT_GT(record.num_entries, 0u);
+    ASSERT_GT(record.file_size, 0u);
     if (record.op == "delete") {
+      // Each input file holds the two keys it was flushed with.
+      ASSERT_EQ(2u, record.num_entries);
       deleted.push_back(record.file_number);
     } else {
       created.push_back(record.file_number);

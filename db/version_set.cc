@@ -6194,17 +6194,26 @@ Status VersionSet::ProcessManifestWrites(
         MarkMinLogNumberToKeep(last_min_log_number_to_keep);
       }
 
+      // Key lookup tracing. The records are emitted below, after the manifest
+      // write succeeded and the new versions are installed, so an edit that
+      // failed never reaches the trace. The stats of the files this batch
+      // deletes have to be read here though, while the versions about to be
+      // replaced still hold their metadata.
+      const bool trace_file_lifecycle =
+          UNLIKELY(key_lookup_tracer_ != nullptr &&
+                   key_lookup_tracer_->is_tracing_enabled());
+      TracedFileStatsMap deleted_file_stats;
+      if (trace_file_lifecycle) {
+        CollectDeletedFileStatsForTrace(batch_edits, &deleted_file_stats);
+      }
+
       for (int i = 0; i < static_cast<int>(versions.size()); ++i) {
         ColumnFamilyData* cfd = versions[i]->cfd_;
         AppendVersion(cfd, versions[i]);
       }
 
-      // Key lookup tracing. Emitted here, after the manifest write succeeded
-      // and the new versions are installed, so an edit that failed never
-      // reaches the trace.
-      if (UNLIKELY(key_lookup_tracer_ != nullptr &&
-                   key_lookup_tracer_->is_tracing_enabled())) {
-        RecordFileLifecycleForTrace(batch_edits);
+      if (trace_file_lifecycle) {
+        RecordFileLifecycleForTrace(batch_edits, deleted_file_stats);
       }
     }
     if (!skip_manifest_write) {
@@ -6429,12 +6438,43 @@ Status VersionSet::LogAndApply(
   }
 }
 
+void VersionSet::CollectDeletedFileStatsForTrace(
+    const autovector<VersionEdit*>& batch_edits,
+    TracedFileStatsMap* deleted_stats) const {
+  assert(deleted_stats != nullptr);
+  for (const VersionEdit* e : batch_edits) {
+    if (e->IsColumnFamilyManipulation()) {
+      continue;
+    }
+    const auto& deleted_files = e->GetDeletedFiles();
+    if (deleted_files.empty()) {
+      continue;
+    }
+    ColumnFamilyData* cfd =
+        column_family_set_->GetColumnFamily(e->GetColumnFamily());
+    if (cfd == nullptr || cfd->current() == nullptr) {
+      continue;
+    }
+    const VersionStorageInfo* vstorage = cfd->current()->storage_info();
+    for (const auto& df : deleted_files) {
+      const uint64_t file_number = df.second;
+      const FileMetaData* meta = vstorage->GetFileMetaDataByNumber(file_number);
+      if (meta != nullptr) {
+        (*deleted_stats)[file_number] = {meta->num_entries,
+                                         meta->fd.GetFileSize()};
+      }
+    }
+  }
+}
+
 void VersionSet::RecordFileLifecycleForTrace(
-    const autovector<VersionEdit*>& batch_edits) {
+    const autovector<VersionEdit*>& batch_edits,
+    const TracedFileStatsMap& deleted_stats) {
   assert(key_lookup_tracer_ != nullptr);
   const uint64_t now_us = clock_->NowMicros();
   // Reused across edits; edits in one batch are few and small.
-  std::unordered_map<uint64_t, int> new_file_levels;
+  UnorderedMap<uint64_t, std::pair<int, const FileMetaData*>>
+      new_files_by_number;
 
   for (const VersionEdit* e : batch_edits) {
     if (e->IsColumnFamilyManipulation()) {
@@ -6447,32 +6487,69 @@ void VersionSet::RecordFileLifecycleForTrace(
     }
     const uint32_t cf_id = e->GetColumnFamily();
 
+    // The metadata an edit carries is a copy taken when the file was written,
+    // at which point num_entries is still 0: it is filled in later, from the
+    // file's table properties, by Version::PrepareAppend. Reading the live
+    // copy out of the version just installed therefore gets the entry count
+    // whenever PrepareAppend's per-version I/O budget reached this file, and
+    // costs nothing when it did not.
+    ColumnFamilyData* cfd = column_family_set_->GetColumnFamily(cf_id);
+    const VersionStorageInfo* vstorage =
+        (cfd != nullptr && cfd->current() != nullptr)
+            ? cfd->current()->storage_info()
+            : nullptr;
+    auto live_stats = [vstorage](const FileMetaData& edit_meta) {
+      const FileMetaData* meta = nullptr;
+      if (vstorage != nullptr) {
+        meta = vstorage->GetFileMetaDataByNumber(edit_meta.fd.GetNumber());
+      }
+      if (meta == nullptr) {
+        meta = &edit_meta;
+      }
+      return TracedFileStats{meta->num_entries, meta->fd.GetFileSize()};
+    };
+
     // A file number present in both the added and the removed set is a trivial
     // move: the file was relabeled to a different level, not rewritten. Its
     // blocks stay byte identical, so recording it as a delete plus a create
     // would make a cache simulator discard cached blocks that are still live.
-    new_file_levels.clear();
-    new_file_levels.reserve(new_files.size());
+    new_files_by_number.clear();
+    new_files_by_number.reserve(new_files.size());
     for (const auto& nf : new_files) {
-      new_file_levels.emplace(nf.second.fd.GetNumber(), nf.first);
+      new_files_by_number.emplace(nf.second.fd.GetNumber(),
+                                  std::make_pair(nf.first, &nf.second));
     }
 
     for (const auto& df : deleted_files) {
       const int from_level = df.first;
       const uint64_t file_number = df.second;
-      auto it = new_file_levels.find(file_number);
-      if (it != new_file_levels.end()) {
+      auto it = new_files_by_number.find(file_number);
+      if (it != new_files_by_number.end()) {
+        const int to_level = it->second.first;
+        const TracedFileStats stats = live_stats(*it->second.second);
+        // Erasing marks it as already reported, so the loop below skips it.
+        new_files_by_number.erase(it);
         key_lookup_tracer_
             ->WriteFileLifecycle(now_us, KeyLookupFileOp::kMove, cf_id,
-                                 file_number, static_cast<uint32_t>(from_level),
-                                 static_cast<uint32_t>(it->second))
+                                 file_number, stats.num_entries,
+                                 stats.file_size,
+                                 static_cast<uint32_t>(from_level),
+                                 static_cast<uint32_t>(to_level))
             .PermitUncheckedError();
-        // Erasing marks it as already reported, so the loop below skips it.
-        new_file_levels.erase(it);
       } else {
+        // A real delete. Its stats were captured before the new versions went
+        // in; they are missing only for a file created and deleted inside this
+        // batch, which is reported as 0/0 rather than dropped, since the
+        // delete itself still matters to a simulator.
+        const auto stats_it = deleted_stats.find(file_number);
+        const TracedFileStats stats = stats_it == deleted_stats.end()
+                                          ? TracedFileStats()
+                                          : stats_it->second;
         key_lookup_tracer_
             ->WriteFileLifecycle(now_us, KeyLookupFileOp::kDelete, cf_id,
-                                 file_number, static_cast<uint32_t>(from_level),
+                                 file_number, stats.num_entries,
+                                 stats.file_size,
+                                 static_cast<uint32_t>(from_level),
                                  /*to_level=*/0)
             .PermitUncheckedError();
       }
@@ -6480,13 +6557,15 @@ void VersionSet::RecordFileLifecycleForTrace(
 
     for (const auto& nf : new_files) {
       const uint64_t file_number = nf.second.fd.GetNumber();
-      if (new_file_levels.find(file_number) == new_file_levels.end()) {
+      if (new_files_by_number.find(file_number) == new_files_by_number.end()) {
         // Already reported as a move.
         continue;
       }
+      const TracedFileStats stats = live_stats(nf.second);
       key_lookup_tracer_
           ->WriteFileLifecycle(now_us, KeyLookupFileOp::kCreate, cf_id,
-                               file_number, static_cast<uint32_t>(nf.first),
+                               file_number, stats.num_entries, stats.file_size,
+                               static_cast<uint32_t>(nf.first),
                                /*to_level=*/0)
           .PermitUncheckedError();
     }
