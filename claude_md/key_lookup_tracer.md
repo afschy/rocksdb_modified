@@ -31,8 +31,8 @@ type field. All three are interleaved in one file and totally ordered by a
 trace-wide sequence number.
 
 ```
-# rocksdb_key_lookup_trace v3 block_id_mode=ordinal size_unit=bytes rocksdb=11.9
-F,1,1755212345678000,create,0,1201,5000,4194304,0
+# rocksdb_key_lookup_trace v4 block_id_mode=ordinal size_unit=bytes rocksdb=11.9
+F,1,1755212345678000,create,0,1201,5000,4194304,0,user00001,user04999
 G,7,1755212345678901,42,0,1,3,0:1201:0|1:1150:0:4/8/4101/8192:5/9/4101/8192|2:1043:1:12/10/2048/4096
 A,11,1755212345679500,0,10,3,2,1043,1,2,0/12/4101/8192:1/13/4101/8192
 ```
@@ -67,7 +67,9 @@ comma.
 #### `F` -- one change to the live file set
 
 ```
-F,seq,timestamp_us,create|delete|move,cf_id,file_number,num_entries,file_size,level[,to_level]
+F,seq,timestamp_us,create,cf_id,file_number,num_entries,file_size,level,smallest_key,largest_key
+F,seq,timestamp_us,delete,cf_id,file_number,num_entries,file_size,level
+F,seq,timestamp_us,move,cf_id,file_number,num_entries,file_size,level,to_level
 ```
 
 `num_entries` is the key count the file was built with and `file_size` its size
@@ -77,6 +79,11 @@ the values its `create` carried. `file_size` is always exact. `num_entries` is
 is rare but is not something a parser can assume away; see 1.11.
 
 `to_level` is present only for `move`, where `level` is the source level.
+
+`smallest_key` and `largest_key` are present only for `create`: the file's
+smallest and largest user keys, written as raw bytes with no escaping. A
+`delete` or `move` does not repeat them; carry them over from the `create` by
+`file_number`. See 1.11 before splitting these lines on `,`.
 
 A `move` is a trivial move: the file was relabeled to a different level, not
 rewritten, so its blocks stay byte identical. This distinction is not cosmetic.
@@ -128,6 +135,8 @@ Common to all record types:
 | `file_size` | The SST's size on disk in bytes. Always exact |
 | `level` | The file's level, or for a `move` the level it came from |
 | `to_level` | Present only on a `move` |
+| `smallest_key` | Present only on a `create`. The file's smallest user key, raw bytes |
+| `largest_key` | Present only on a `create`. The file's largest user key, raw bytes |
 
 `A` records:
 
@@ -307,11 +316,13 @@ bindings, matching block cache and IO tracing, which have none either.
 ```python
 import io, zstandard
 
+# Keys in create records are raw bytes: keep them byte-exact, and split lines
+# only on "\n" (universal newlines would also split on a "\r" inside a key).
 def open_trace(path):
     if path.endswith(".zst"):
         return io.TextIOWrapper(zstandard.ZstdDecompressor().stream_reader(
-            open(path, "rb")))
-    return open(path)
+            open(path, "rb")), newline="\n", errors="surrogateescape")
+    return open(path, newline="\n", errors="surrogateescape")
 
 def parse_block(s):
     block_id, seq, read_bytes, uncomp_bytes = (int(x) for x in s.split("/"))
@@ -329,9 +340,12 @@ for line in open_trace(path):
             level, file_number, outcome = (int(p) for p in parts[:3])
             blocks = [parse_block(b) for b in parts[3:]]
     elif fields[0] == "F":
-        # fields[9] (to_level) is present only for a move
         (_, seq, ts, op, cf_id, file_number, num_entries, file_size,
          level) = fields[:9]
+        if op == "move":
+            to_level = fields[9]
+        elif op == "create":
+            smallest_key, largest_key = fields[9:11]
     elif fields[0] == "A":
         (_, seq, ts, cf_id, caller, iter_id, level, file_number, no_insert,
          num_blocks, block_list) = fields
@@ -411,6 +425,20 @@ unset. Treat it as reliable but check for 0 rather than dividing by it.
 operands are included, so it is the count the file was *built* with. Summing it
 over the live file set overcounts the DB's logical key count by whatever has
 not yet been compacted away.
+
+**Keys are written raw, so a key can break the line.** `smallest_key` and
+`largest_key` are not escaped or encoded. A key containing `,` shifts the field
+split, and one containing `\n` splits the record across two lines. Both
+occur in binary keyspaces: db_bench's default keys are the key number as
+big-endian bytes, so a byte of `0x2C` or `0x0A` turns up in roughly 1 key in
+128 per varying byte. A key can also hold `\0`, which C-string parsers truncate
+at.
+
+**The key range is RocksDB's file boundary, not necessarily stored keys.**
+It is `FileMetaData::smallest`/`largest`, which also spans the file's range
+tombstones, so a bound can be a range deletion's start or end rather than a
+key present in the file. With user-defined timestamps enabled, each key
+carries its timestamp suffix.
 
 **Deleting a file does not evict its cached blocks.** RocksDB does not
 proactively drop blocks belonging to a deleted SST; they occupy the cache until
@@ -735,6 +763,11 @@ the size is known.
 Nothing here forces a table-properties load, so the feature adds no I/O: it
 reports what `PrepareAppend` had already read, and 0 when it had not.
 
+Key range: `create` records take the user keys of `FileMetaData::smallest` and
+`largest` from the edit's copy, since unlike `num_entries` they are set when
+the file is written. The writer appends them only for `kCreate` and ignores
+them for the other ops, so `delete` and `move` lines are unchanged.
+
 This is the cheapest feature here -- a handful of records per compaction, on a
 cold path -- and per byte the most useful, because it is the only way to see
 that a deleted file's blocks are still sitting in the cache.
@@ -892,8 +925,10 @@ the fixtures `FlushToLevel`, `FlushSpanningFile` (writes one file spanning
 **`KeyLookupTracerTest`** -- format level, no DB. Exact line assertions for all
 three record types, including that a zero-probe `G` line ends with a comma,
 that a zero-block probe has exactly three colon-separated fields with no
-trailing colon, that `to_level` appears only on a `move`, and that
-`num_entries` and `file_size` sit between the file number and the level. All
+trailing colon, that `to_level` appears only on a `move`, that
+`num_entries` and `file_size` sit between the file number and the level, and
+that `smallest_key` and `largest_key` end a `create` line, raw and possibly
+empty, and are left off `delete` and `move` even when passed. All
 five `outcome` and all five `final_result` values. Truncation appending `#
 truncated` exactly once. Sampling at frequency 4 yielding exactly one in four.
 The caller mask, and that the master switch overrides it. The not-tracing and
@@ -956,7 +991,9 @@ since `MoveFilesToLevel(2)` walks the file down one level at a time and so
 reaching L2 is two trivial moves, with the file keeping its number throughout.
 All three also check the per-file stats: the entry count matches the number of
 keys flushed and the size is nonzero, on deletes as well as creates, and a
-trivially moved file reports the same size before and after the move.
+trivially moved file reports the same size before and after the move. The
+flush and the compaction output also check the `create`'s key range, and the
+parser checks that each op has exactly its own field count.
 
 Iterator accesses: `IteratorEmitsGroupedAccesses`,
 `LongScanEmitsContinuationRecords` (a scan crossing `kIterFlushThreshold` emits

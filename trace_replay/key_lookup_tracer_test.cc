@@ -65,6 +65,9 @@ struct ParsedFileRecord {
   uint32_t level = 0;
   uint32_t to_level = 0;
   bool has_to_level = false;
+  // Present only on a create.
+  std::string smallest_key;
+  std::string largest_key;
 };
 
 // One "A" iterator access record.
@@ -167,10 +170,13 @@ ParsedRecord ParseGetRecord(const std::vector<std::string>& fields) {
 ParsedFileRecord ParseFileRecord(const std::vector<std::string>& fields) {
   ParsedFileRecord record;
   EXPECT_GE(fields.size(), 9u);
-  EXPECT_LE(fields.size(), 10u);
+  EXPECT_LE(fields.size(), 11u);
   record.seq = ParseUint64(fields[1]);
   record.timestamp_us = ParseUint64(fields[2]);
   record.op = fields[3];
+  // A move appends to_level, a create the two keys, a delete nothing.
+  EXPECT_EQ(record.op == "move" ? 10u : (record.op == "create" ? 11u : 9u),
+            fields.size());
   record.cf_id = static_cast<uint32_t>(ParseUint64(fields[4]));
   record.file_number = ParseUint64(fields[5]);
   record.num_entries = ParseUint64(fields[6]);
@@ -179,6 +185,9 @@ ParsedFileRecord ParseFileRecord(const std::vector<std::string>& fields) {
   if (fields.size() == 10) {
     record.to_level = static_cast<uint32_t>(ParseUint64(fields[9]));
     record.has_to_level = true;
+  } else if (fields.size() == 11) {
+    record.smallest_key = fields[9];
+    record.largest_key = fields[10];
   }
   return record;
 }
@@ -341,16 +350,16 @@ TEST_F(KeyLookupTracerTest, HeaderLine) {
   options.block_id_mode = KeyLookupBlockIdMode::kOrdinal;
   std::vector<std::string> lines = Trace(options, [](KeyLookupTracer*) {});
   ASSERT_EQ(1u, lines.size());
-  ASSERT_EQ(0u, lines[0].find(
-                    "# rocksdb_key_lookup_trace v3 block_id_mode=ordinal "
-                    "size_unit=bytes rocksdb="));
+  ASSERT_EQ(0u,
+            lines[0].find("# rocksdb_key_lookup_trace v4 block_id_mode=ordinal "
+                          "size_unit=bytes rocksdb="));
 
   options.block_id_mode = KeyLookupBlockIdMode::kOffset;
   lines = Trace(options, [](KeyLookupTracer*) {});
   ASSERT_EQ(1u, lines.size());
-  ASSERT_EQ(0u, lines[0].find(
-                    "# rocksdb_key_lookup_trace v3 block_id_mode=offset "
-                    "size_unit=bytes rocksdb="));
+  ASSERT_EQ(0u,
+            lines[0].find("# rocksdb_key_lookup_trace v4 block_id_mode=offset "
+                          "size_unit=bytes rocksdb="));
 }
 
 TEST_F(KeyLookupTracerTest, RecordWithNoProbes) {
@@ -474,17 +483,27 @@ TEST_F(KeyLookupTracerTest, FileLifecycleFormat) {
   std::vector<std::string> lines =
       Trace(KeyLookupTraceOptions(), [](KeyLookupTracer* tracer) {
         ASSERT_OK(tracer->WriteFileLifecycle(111, KeyLookupFileOp::kCreate, 2,
-                                             1201, 5000, 4194304, 0, 0));
+                                             1201, 5000, 4194304, 0, 0,
+                                             "key001", "key999"));
+        // to_level is written only for a move, and the keys only for a
+        // create, even when the caller passes them.
         ASSERT_OK(tracer->WriteFileLifecycle(222, KeyLookupFileOp::kDelete, 2,
-                                             1150, 4211, 3211264, 3, 0));
-        // to_level is written only for a move.
+                                             1150, 4211, 3211264, 3, 0,
+                                             "key001", "key999"));
         ASSERT_OK(tracer->WriteFileLifecycle(333, KeyLookupFileOp::kMove, 2,
-                                             1043, 90, 65536, 1, 2));
+                                             1043, 90, 65536, 1, 2, "key001",
+                                             "key999"));
+        // Keys are raw bytes and may be empty.
+        ASSERT_OK(tracer->WriteFileLifecycle(444, KeyLookupFileOp::kCreate, 2,
+                                             1202, 1, 4096, 0, 0, Slice(),
+                                             Slice("\x00\xff", 2)));
       });
-  ASSERT_EQ(4u, lines.size());
-  ASSERT_EQ("F,1,111,create,2,1201,5000,4194304,0", lines[1]);
+  ASSERT_EQ(5u, lines.size());
+  ASSERT_EQ("F,1,111,create,2,1201,5000,4194304,0,key001,key999", lines[1]);
   ASSERT_EQ("F,2,222,delete,2,1150,4211,3211264,3", lines[2]);
   ASSERT_EQ("F,3,333,move,2,1043,90,65536,1,2", lines[3]);
+  ASSERT_EQ(std::string("F,4,444,create,2,1202,1,4096,0,,\x00\xff", 34),
+            lines[4]);
 }
 
 TEST_F(KeyLookupTracerTest, IteratorAccessFormat) {
@@ -1148,6 +1167,8 @@ TEST_F(KeyLookupTraceDBTest, FlushEmitsCreateRecord) {
   // One Put flushed, so one entry, in a file that is not empty.
   ASSERT_EQ(1u, trace.files[0].num_entries);
   ASSERT_GT(trace.files[0].file_size, 0u);
+  ASSERT_EQ("a", trace.files[0].smallest_key);
+  ASSERT_EQ("a", trace.files[0].largest_key);
   std::vector<uint64_t> at_l0 = FileNumbersAtLevel(0);
   ASSERT_EQ(1u, at_l0.size());
   ASSERT_EQ(at_l0[0], trace.files[0].file_number);
@@ -1223,6 +1244,9 @@ TEST_F(KeyLookupTraceDBTest, RewritingCompactionEmitsDeleteAndCreate) {
       ASSERT_EQ(2u, record.num_entries);
       deleted.push_back(record.file_number);
     } else {
+      // The output holds both keys of the inputs.
+      ASSERT_EQ("a", record.smallest_key);
+      ASSERT_EQ("m", record.largest_key);
       created.push_back(record.file_number);
     }
   }

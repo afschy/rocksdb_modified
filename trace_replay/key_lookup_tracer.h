@@ -14,6 +14,7 @@
 #include "monitoring/instrumented_mutex.h"
 #include "rocksdb/key_lookup_trace_options.h"
 #include "rocksdb/rocksdb_namespace.h"
+#include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "trace_replay/key_lookup_block_access.h"
 #include "util/autovector.h"
@@ -98,12 +99,14 @@ class KeyLookupTraceWriter {
   // Appends one file lifecycle record. `num_entries` and `file_size` describe
   // the file itself; 0 means the caller could not recover that number, which
   // only really happens for `num_entries`. `to_level` is written only for
-  // kMove.
+  // kMove, and the user keys, as raw bytes, only for kCreate.
   Status WriteFileLifecycle(uint64_t seq, uint64_t timestamp_us,
                             KeyLookupFileOp op, uint32_t cf_id,
                             uint64_t file_number, uint64_t num_entries,
                             uint64_t file_size, uint32_t level,
-                            uint32_t to_level, uint64_t max_trace_file_size);
+                            uint32_t to_level, const Slice& smallest_user_key,
+                            const Slice& largest_user_key,
+                            uint64_t max_trace_file_size);
 
   // Appends one iterator access record, covering the blocks one table iterator
   // read from one file. A long scan emits several of these sharing an
@@ -215,7 +218,9 @@ class KeyLookupTracer {
   Status WriteFileLifecycle(uint64_t timestamp_us, KeyLookupFileOp op,
                             uint32_t cf_id, uint64_t file_number,
                             uint64_t num_entries, uint64_t file_size,
-                            uint32_t level, uint32_t to_level);
+                            uint32_t level, uint32_t to_level,
+                            const Slice& smallest_user_key,
+                            const Slice& largest_user_key);
 
   Status WriteIteratorAccess(uint64_t seq, uint64_t timestamp_us,
                              uint32_t cf_id, uint32_t caller, uint64_t iter_id,

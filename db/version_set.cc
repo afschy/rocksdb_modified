@@ -6534,7 +6534,9 @@ void VersionSet::RecordFileLifecycleForTrace(
                                  file_number, stats.num_entries,
                                  stats.file_size,
                                  static_cast<uint32_t>(from_level),
-                                 static_cast<uint32_t>(to_level))
+                                 static_cast<uint32_t>(to_level),
+                                 /*smallest_user_key=*/Slice(),
+                                 /*largest_user_key=*/Slice())
             .PermitUncheckedError();
       } else {
         // A real delete. Its stats were captured before the new versions went
@@ -6550,7 +6552,8 @@ void VersionSet::RecordFileLifecycleForTrace(
                                  file_number, stats.num_entries,
                                  stats.file_size,
                                  static_cast<uint32_t>(from_level),
-                                 /*to_level=*/0)
+                                 /*to_level=*/0, /*smallest_user_key=*/Slice(),
+                                 /*largest_user_key=*/Slice())
             .PermitUncheckedError();
       }
     }
@@ -6562,11 +6565,16 @@ void VersionSet::RecordFileLifecycleForTrace(
         continue;
       }
       const TracedFileStats stats = live_stats(nf.second);
+      // The key range is set when the file is written, so the edit's copy has
+      // it. Guarded only because user_key() requires a set key.
+      const InternalKey& smallest = nf.second.smallest;
+      const InternalKey& largest = nf.second.largest;
       key_lookup_tracer_
           ->WriteFileLifecycle(now_us, KeyLookupFileOp::kCreate, cf_id,
                                file_number, stats.num_entries, stats.file_size,
-                               static_cast<uint32_t>(nf.first),
-                               /*to_level=*/0)
+                               static_cast<uint32_t>(nf.first), /*to_level=*/0,
+                               smallest.unset() ? Slice() : smallest.user_key(),
+                               largest.unset() ? Slice() : largest.user_key())
           .PermitUncheckedError();
     }
   }
