@@ -17,10 +17,17 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-// One data block access.
+// Kind of block an access read. Written as 'd' or 'i' in the trace.
+enum class KeyLookupBlockType : uint8_t {
+  kData = 0,
+  kIndex = 1,
+};
+
+// One block access.
 struct KeyLookupBlockAccess {
-  // Ordinal or raw offset, per KeyLookupTraceOptions::block_id_mode.
-  // UINT64_MAX when it could not be resolved.
+  KeyLookupBlockType type = KeyLookupBlockType::kData;
+  // Ordinal or raw offset, per KeyLookupTraceOptions::block_id_mode. Data and
+  // index blocks are numbered separately. UINT64_MAX when unresolvable.
   uint64_t block_id = 0;
   // Position of this access in the trace-wide sequence.
   uint64_t seq = 0;
@@ -33,11 +40,11 @@ struct KeyLookupBlockAccess {
 
 // Block accesses of one point lookup, across every file it searched.
 //
-// The inline capacity here is deliberately small. KeyLookupBlockAccess is 24
+// The inline capacity here is deliberately small. KeyLookupBlockAccess is 32
 // bytes, and this buffer sits on the stack of every Version::Get whether that
 // lookup is traced or not, so a large inline capacity would be paid for by
-// untraced lookups too. A point lookup reads one to three data blocks in
-// total, so spilling is rare.
+// untraced lookups too. A point lookup reads an index block and a data block
+// from one to three files in total, so spilling is rare.
 using KeyLookupBlockAccesses = autovector<KeyLookupBlockAccess, 8>;
 
 // Buffer for one table iterator's block accesses. Owned by the iterator and

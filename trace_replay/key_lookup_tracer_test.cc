@@ -6,6 +6,7 @@
 #include "trace_replay/key_lookup_tracer.h"
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -26,20 +27,23 @@ namespace ROCKSDB_NAMESPACE {
 
 namespace {
 
-// One data block access as parsed back out of a trace line.
+// One block access as parsed back out of a trace line.
 struct ParsedBlock {
+  char type = 'd';
   uint64_t block_id = 0;
   uint64_t seq = 0;
   uint32_t read_bytes = 0;
   uint32_t uncomp_bytes = 0;
 };
 
-// One probe as parsed back out of a trace line.
+// One probe as parsed back out of a trace line. Data and index blocks are
+// split apart; each keeps its trace order.
 struct ParsedProbe {
   uint32_t level = 0;
   uint64_t file_number = 0;
   int outcome = 0;
   std::vector<ParsedBlock> blocks;
+  std::vector<ParsedBlock> index_blocks;
 };
 
 // One "G" record as parsed back out of a trace line.
@@ -122,18 +126,20 @@ std::vector<std::string> ReadTraceLines(Env* env, const std::string& path) {
   return lines;
 }
 
-// Parses "<block_id>/<seq>/<read_bytes>/<uncomp_bytes>".
+// Parses "<type>/<block_id>/<seq>/<read_bytes>/<uncomp_bytes>".
 ParsedBlock ParseBlock(const std::string& s) {
   std::vector<std::string> parts = SplitOn(s, '/');
-  EXPECT_EQ(4u, parts.size());
+  EXPECT_EQ(5u, parts.size());
   ParsedBlock block;
-  if (parts.size() != 4) {
+  if (parts.size() != 5) {
     return block;
   }
-  block.block_id = ParseUint64(parts[0]);
-  block.seq = ParseUint64(parts[1]);
-  block.read_bytes = static_cast<uint32_t>(ParseUint64(parts[2]));
-  block.uncomp_bytes = static_cast<uint32_t>(ParseUint64(parts[3]));
+  EXPECT_TRUE(parts[0] == "d" || parts[0] == "i") << s;
+  block.type = parts[0].empty() ? '?' : parts[0][0];
+  block.block_id = ParseUint64(parts[1]);
+  block.seq = ParseUint64(parts[2]);
+  block.read_bytes = static_cast<uint32_t>(ParseUint64(parts[3]));
+  block.uncomp_bytes = static_cast<uint32_t>(ParseUint64(parts[4]));
   return block;
 }
 
@@ -160,7 +166,8 @@ ParsedRecord ParseGetRecord(const std::vector<std::string>& fields) {
     probe.file_number = ParseUint64(parts[1]);
     probe.outcome = atoi(parts[2].c_str());
     for (size_t i = 3; i < parts.size(); i++) {
-      probe.blocks.push_back(ParseBlock(parts[i]));
+      ParsedBlock block = ParseBlock(parts[i]);
+      (block.type == 'i' ? probe.index_blocks : probe.blocks).push_back(block);
     }
     record.probes.push_back(probe);
   }
@@ -210,6 +217,8 @@ ParsedIterRecord ParseIterRecord(const std::vector<std::string>& fields) {
   }
   for (const std::string& block_str : SplitOn(fields[10], ':')) {
     record.blocks.push_back(ParseBlock(block_str));
+    // Iterators record data blocks only.
+    EXPECT_EQ('d', record.blocks.back().type);
   }
   return record;
 }
@@ -254,6 +263,29 @@ ParsedTrace ParseTrace(const std::vector<std::string>& lines) {
 
 std::vector<ParsedRecord> ParseRecords(const std::vector<std::string>& lines) {
   return ParseTrace(lines).gets;
+}
+
+// Asserts that the sequence numbers of `records` and of every block they list
+// form 1..N with no gaps and no repeats.
+void AssertSeqsDense(const std::vector<ParsedRecord>& records) {
+  std::vector<uint64_t> seqs;
+  for (const ParsedRecord& record : records) {
+    seqs.push_back(record.seq);
+    for (const ParsedProbe& probe : record.probes) {
+      for (const ParsedBlock& block : probe.blocks) {
+        seqs.push_back(block.seq);
+      }
+      for (const ParsedBlock& block : probe.index_blocks) {
+        seqs.push_back(block.seq);
+      }
+    }
+  }
+  ASSERT_FALSE(seqs.empty());
+  std::sort(seqs.begin(), seqs.end());
+  ASSERT_EQ(1u, seqs.front());
+  for (size_t i = 1; i < seqs.size(); i++) {
+    ASSERT_EQ(seqs[i - 1] + 1, seqs[i]) << "gap or repeat at index " << i;
+  }
 }
 
 // Decompresses a trace file written as concatenated zstd frames.
@@ -351,14 +383,14 @@ TEST_F(KeyLookupTracerTest, HeaderLine) {
   std::vector<std::string> lines = Trace(options, [](KeyLookupTracer*) {});
   ASSERT_EQ(1u, lines.size());
   ASSERT_EQ(0u,
-            lines[0].find("# rocksdb_key_lookup_trace v4 block_id_mode=ordinal "
+            lines[0].find("# rocksdb_key_lookup_trace v5 block_id_mode=ordinal "
                           "size_unit=bytes rocksdb="));
 
   options.block_id_mode = KeyLookupBlockIdMode::kOffset;
   lines = Trace(options, [](KeyLookupTracer*) {});
   ASSERT_EQ(1u, lines.size());
   ASSERT_EQ(0u,
-            lines[0].find("# rocksdb_key_lookup_trace v4 block_id_mode=offset "
+            lines[0].find("# rocksdb_key_lookup_trace v5 block_id_mode=offset "
                           "size_unit=bytes rocksdb="));
 }
 
@@ -391,19 +423,23 @@ TEST_F(KeyLookupTracerTest, ProbesWithSeveralBlocks) {
       Trace(KeyLookupTraceOptions(), [](KeyLookupTracer* tracer) {
         KeyLookupProbes probes;
         probes.push_back({0, 1201, KeyLookupOutcome::kNotFound, 0, 0});
-        probes.push_back({1, 1150, KeyLookupOutcome::kNotFound, 0, 2});
-        probes.push_back({2, 1043, KeyLookupOutcome::kFoundValue, 2, 1});
+        probes.push_back({1, 1150, KeyLookupOutcome::kNotFound, 0, 3});
+        probes.push_back({2, 1043, KeyLookupOutcome::kFoundValue, 3, 2});
         KeyLookupBlockAccesses blocks;
-        blocks.push_back({4, 100, 4101, 8192});
-        blocks.push_back({5, 101, 4101, 8192});
-        blocks.push_back({12, 102, 2048, 4096});
+        blocks.push_back({KeyLookupBlockType::kIndex, 0, 99, 1205, 4096});
+        blocks.push_back({KeyLookupBlockType::kData, 4, 100, 4101, 8192});
+        blocks.push_back({KeyLookupBlockType::kData, 5, 101, 4101, 8192});
+        blocks.push_back({KeyLookupBlockType::kIndex, 3, 102, 990, 2048});
+        blocks.push_back({KeyLookupBlockType::kData, 12, 103, 2048, 4096});
         WriteOne(tracer, KeyLookupResult::kFound, probes, blocks);
       });
   ASSERT_EQ(2u, lines.size());
+  // Index and data blocks share one list, in access order, told apart by the
+  // leading type field.
   ASSERT_EQ(
       "G,9,12345,1,7,1,3,"
-      "0:1201:0|1:1150:0:4/100/4101/8192:5/101/4101/8192|2:1043:1:12/102/2048/"
-      "4096",
+      "0:1201:0|1:1150:0:i/0/99/1205/4096:d/4/100/4101/8192:d/5/101/4101/8192|"
+      "2:1043:1:i/3/102/990/2048:d/12/103/2048/4096",
       lines[1]);
 }
 
@@ -510,8 +546,8 @@ TEST_F(KeyLookupTracerTest, IteratorAccessFormat) {
   std::vector<std::string> lines =
       Trace(KeyLookupTraceOptions(), [](KeyLookupTracer* tracer) {
         KeyLookupIterBlocks blocks;
-        blocks.push_back({7, 40, 4101, 8192});
-        blocks.push_back({8, 41, 4101, 8192});
+        blocks.push_back({KeyLookupBlockType::kData, 7, 40, 4101, 8192});
+        blocks.push_back({KeyLookupBlockType::kData, 8, 41, 4101, 8192});
         ASSERT_OK(tracer->WriteIteratorAccess(
             /*seq=*/5, /*timestamp_us=*/999, /*cf_id=*/0, /*caller=*/10,
             /*iter_id=*/3, /*level=*/2, /*file_number=*/1201,
@@ -523,7 +559,8 @@ TEST_F(KeyLookupTracerTest, IteratorAccessFormat) {
             /*no_insert=*/false, KeyLookupIterBlocks()));
       });
   ASSERT_EQ(3u, lines.size());
-  ASSERT_EQ("A,5,999,0,10,3,2,1201,1,2,7/40/4101/8192:8/41/4101/8192", lines[1]);
+  ASSERT_EQ("A,5,999,0,10,3,2,1201,1,2,d/7/40/4101/8192:d/8/41/4101/8192",
+            lines[1]);
   ASSERT_EQ("A,6,999,0,3,4,0,1202,0,0,", lines[2]);
 }
 
@@ -556,8 +593,8 @@ TEST_F(KeyLookupTracerTest, ZstdCompressionRoundTrips) {
       KeyLookupProbes probes;
       probes.push_back({1, 1150, KeyLookupOutcome::kNotFound, 0, 1});
       KeyLookupBlockAccesses blocks;
-      blocks.push_back({static_cast<uint64_t>(i), static_cast<uint64_t>(i),
-                        4101, 8192});
+      blocks.push_back({KeyLookupBlockType::kData, static_cast<uint64_t>(i),
+                        static_cast<uint64_t>(i), 4101, 8192});
       WriteOne(tracer, KeyLookupResult::kNotFound, probes, blocks);
     }
   };
@@ -609,8 +646,8 @@ TEST_F(KeyLookupTracerTest, ZstdCompressionSpansMultipleBatches) {
       KeyLookupProbes probes;
       probes.push_back({1, 1150, KeyLookupOutcome::kNotFound, 0, 1});
       KeyLookupBlockAccesses blocks;
-      blocks.push_back({static_cast<uint64_t>(i), static_cast<uint64_t>(i),
-                        4101, 8192});
+      blocks.push_back({KeyLookupBlockType::kData, static_cast<uint64_t>(i),
+                        static_cast<uint64_t>(i), 4101, 8192});
       WriteOne(tracer, KeyLookupResult::kNotFound, probes, blocks);
     }
   };
@@ -853,8 +890,10 @@ TEST_F(KeyLookupTraceDBTest, FilterNegativeProbesReadNoBlocks) {
   ASSERT_EQ(3u, record.probes.size());
   for (const ParsedProbe& probe : record.probes) {
     ASSERT_EQ(Outcome(KeyLookupOutcome::kNotFound), probe.outcome);
-    // The filter excluded the file, so no data block was read.
+    // The filter excluded the file, so neither an index nor a data block was
+    // read.
     ASSERT_EQ(0u, probe.blocks.size());
+    ASSERT_EQ(0u, probe.index_blocks.size());
   }
 }
 
@@ -1019,6 +1058,198 @@ TEST_F(KeyLookupTraceBlockIdTest, RecordBlocksDisabled) {
   ASSERT_EQ(Outcome(KeyLookupOutcome::kFoundValue), record.probes[0].outcome);
   // The file sequence is still recorded, but no blocks are.
   ASSERT_EQ(0u, record.probes[0].blocks.size());
+  ASSERT_EQ(0u, record.probes[0].index_blocks.size());
+}
+
+// A single-level index is one block per searched file, recorded ahead of the
+// data block it leads to whether the table reader or the block cache holds it.
+TEST_F(KeyLookupTraceDBTest, SingleLevelIndexBlockRecordedPerProbe) {
+  for (bool cache_index : {false, true}) {
+    SCOPED_TRACE("cache_index_and_filter_blocks=" +
+                 std::to_string(cache_index));
+    Options options = TraceOptions();
+    BlockBasedTableOptions table_options;
+    table_options.cache_index_and_filter_blocks = cache_index;
+    options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+    DestroyAndReopen(options);
+    FlushSpanningFile(2, "v2", [&] { ASSERT_OK(Put("k", "value")); });
+    FlushSpanningFile(1, "v1");
+
+    // Twice: with the block cache the second lookup is a hit, and must still
+    // be recorded the same way.
+    StartTrace();
+    ASSERT_EQ("value", Get("k"));
+    ASSERT_EQ("value", Get("k"));
+    std::vector<ParsedRecord> records = EndTraceAndParse();
+    ASSERT_EQ(2u, records.size());
+    for (const ParsedRecord& record : records) {
+      ASSERT_EQ(2u, record.probes.size());
+      for (size_t p = 0; p < record.probes.size(); p++) {
+        const ParsedProbe& probe = record.probes[p];
+        ASSERT_EQ(1u, probe.index_blocks.size());
+        ASSERT_EQ(1u, probe.blocks.size());
+        const ParsedBlock& index = probe.index_blocks[0];
+        ASSERT_EQ(0u, index.block_id);
+        ASSERT_GT(index.uncomp_bytes, 0u);
+        // Compression is off, so the read adds only the trailer.
+        ASSERT_EQ(index.uncomp_bytes + BlockBasedTable::kBlockTrailerSize,
+                  index.read_bytes);
+        ASSERT_LT(index.seq, probe.blocks[0].seq);
+        ASSERT_EQ(records[0].probes[p].index_blocks[0].uncomp_bytes,
+                  index.uncomp_bytes);
+      }
+    }
+  }
+}
+
+TEST_F(KeyLookupTraceDBTest, IndexBlockOffsetFollowsDataBlocks) {
+  Options options = TraceOptions();
+  DestroyAndReopen(options);
+  FlushSpanningFile(1, "v1", [&] { ASSERT_OK(Put("k", "value")); });
+
+  KeyLookupTraceOptions trace_options;
+  trace_options.block_id_mode = KeyLookupBlockIdMode::kOffset;
+  ParsedRecord record = TraceOneGet("k", trace_options);
+  ASSERT_EQ(1u, record.probes.size());
+  ASSERT_EQ(1u, record.probes[0].index_blocks.size());
+  ASSERT_EQ(1u, record.probes[0].blocks.size());
+  // The index block is written after every data block.
+  ASSERT_GT(record.probes[0].index_blocks[0].block_id,
+            record.probes[0].blocks[0].block_id);
+}
+
+// Builds one L0 file whose partitioned index spans several partitions.
+class KeyLookupTracePartitionedIndexTest : public KeyLookupTraceBlockIdTest {
+ public:
+  void BuildPartitionedIndexFile(bool pin_partitions) {
+    Options options = TraceOptions();
+    options.statistics = CreateDBStatistics();
+    BlockBasedTableOptions table_options;
+    table_options.block_size = 128;
+    table_options.index_type = BlockBasedTableOptions::kTwoLevelIndexSearch;
+    // Small partitions, so the index spans several of them.
+    table_options.metadata_block_size = 128;
+    if (pin_partitions) {
+      table_options.cache_index_and_filter_blocks = true;
+      table_options.metadata_cache_options.partition_pinning =
+          PinningTier::kAll;
+    }
+    options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+    DestroyAndReopen(options);
+
+    for (int i = 0; i < kNumKeys; i++) {
+      ASSERT_OK(Put(KeyAt(i), std::string(64, 'v')));
+    }
+    FlushToLevel(0);
+  }
+
+  uint64_t NumIndexPartitions() {
+    TablePropertiesCollection props;
+    EXPECT_OK(db_->GetPropertiesOfAllTables(&props));
+    EXPECT_EQ(1u, props.size());
+    return props.empty() ? 0 : props.begin()->second->index_partitions;
+  }
+
+  uint64_t IndexBlockCacheAccesses() {
+    Statistics* stats = db_->GetOptions().statistics.get();
+    return stats->getTickerCount(BLOCK_CACHE_INDEX_HIT) +
+           stats->getTickerCount(BLOCK_CACHE_INDEX_MISS);
+  }
+
+  // Traces a Get() of every key, in key order.
+  std::vector<ParsedRecord> TraceAllKeys(KeyLookupBlockIdMode mode) {
+    KeyLookupTraceOptions trace_options;
+    trace_options.block_id_mode = mode;
+    StartTrace(trace_options);
+    for (int i = 0; i < kNumKeys; i++) {
+      EXPECT_EQ(std::string(64, 'v'), Get(KeyAt(i)));
+    }
+    std::vector<ParsedRecord> records = EndTraceAndParse();
+    EXPECT_EQ(static_cast<size_t>(kNumKeys), records.size());
+    return records;
+  }
+};
+
+// A lookup reads the top-level block, then one partition, then a data block.
+// The ids and sizes recorded do not depend on whether partitions are pinned.
+TEST_F(KeyLookupTracePartitionedIndexTest, TopLevelThenPartition) {
+  std::vector<ParsedRecord> by_config[2];
+  for (bool pin : {false, true}) {
+    SCOPED_TRACE("pin_partitions=" + std::to_string(pin));
+    BuildPartitionedIndexFile(pin);
+    const uint64_t num_partitions = NumIndexPartitions();
+    ASSERT_GT(num_partitions, 1u);
+
+    const uint64_t cache_accesses_before = IndexBlockCacheAccesses();
+    std::vector<ParsedRecord> records =
+        TraceAllKeys(KeyLookupBlockIdMode::kOrdinal);
+    // Guard the premise: pinned partitions bypass the block cache and unpinned
+    // ones go through it, so both partition read paths are exercised.
+    if (pin) {
+      ASSERT_EQ(cache_accesses_before, IndexBlockCacheAccesses());
+    } else {
+      ASSERT_LT(cache_accesses_before, IndexBlockCacheAccesses());
+    }
+    AssertSeqsDense(records);
+
+    std::set<uint64_t> partitions_read;
+    uint64_t previous_partition = 0;
+    for (const ParsedRecord& record : records) {
+      ASSERT_EQ(1u, record.probes.size());
+      const ParsedProbe& probe = record.probes[0];
+      ASSERT_EQ(2u, probe.index_blocks.size());
+      ASSERT_EQ(1u, probe.blocks.size());
+      const ParsedBlock& top_level = probe.index_blocks[0];
+      const ParsedBlock& partition = probe.index_blocks[1];
+      // The top-level block is written after every partition, so it is last.
+      ASSERT_EQ(num_partitions, top_level.block_id);
+      ASSERT_LT(partition.block_id, num_partitions);
+      ASSERT_GE(partition.block_id, previous_partition);
+      previous_partition = partition.block_id;
+      partitions_read.insert(partition.block_id);
+      ASSERT_GT(top_level.uncomp_bytes, 0u);
+      ASSERT_GT(partition.uncomp_bytes, 0u);
+      ASSERT_LT(top_level.seq, partition.seq);
+      ASSERT_LT(partition.seq, probe.blocks[0].seq);
+    }
+    // Every partition indexes some key, so the ordinals are dense.
+    ASSERT_EQ(num_partitions, partitions_read.size());
+    by_config[pin ? 1 : 0] = std::move(records);
+  }
+
+  for (size_t i = 0; i < by_config[0].size(); i++) {
+    for (size_t b = 0; b < 2; b++) {
+      const ParsedBlock& unpinned = by_config[0][i].probes[0].index_blocks[b];
+      const ParsedBlock& pinned = by_config[1][i].probes[0].index_blocks[b];
+      ASSERT_EQ(unpinned.block_id, pinned.block_id);
+      ASSERT_EQ(unpinned.read_bytes, pinned.read_bytes);
+      ASSERT_EQ(unpinned.uncomp_bytes, pinned.uncomp_bytes);
+    }
+  }
+}
+
+TEST_F(KeyLookupTracePartitionedIndexTest, Offsets) {
+  BuildPartitionedIndexFile(/*pin_partitions=*/false);
+  std::vector<ParsedRecord> records =
+      TraceAllKeys(KeyLookupBlockIdMode::kOffset);
+  ASSERT_FALSE(records.empty());
+
+  const uint64_t top_level_offset =
+      records[0].probes[0].index_blocks[0].block_id;
+  uint64_t previous_partition = 0;
+  for (const ParsedRecord& record : records) {
+    ASSERT_EQ(1u, record.probes.size());
+    const ParsedProbe& probe = record.probes[0];
+    ASSERT_EQ(2u, probe.index_blocks.size());
+    ASSERT_EQ(1u, probe.blocks.size());
+    const uint64_t partition_offset = probe.index_blocks[1].block_id;
+    ASSERT_EQ(top_level_offset, probe.index_blocks[0].block_id);
+    // File order: data blocks, then partitions, then the top-level block.
+    ASSERT_LT(probe.blocks[0].block_id, partition_offset);
+    ASSERT_LT(partition_offset, top_level_offset);
+    ASSERT_GE(partition_offset, previous_partition);
+    previous_partition = partition_offset;
+  }
 }
 
 TEST_F(KeyLookupTraceDBTest, SamplingSkipsRequests) {
@@ -1090,22 +1321,8 @@ TEST_F(KeyLookupTraceDBTest, SequenceNumbersAreDenseAndOrdered) {
   ParsedTrace trace = EndTraceAndParseAll();
   ASSERT_EQ(5u, trace.gets.size());
 
-  // Collect every sequence number the trace hands out, records and blocks
-  // alike, and check they form 1..N with no gaps and no repeats.
-  std::vector<uint64_t> seqs;
-  for (const ParsedRecord& record : trace.gets) {
-    seqs.push_back(record.seq);
-    for (const ParsedProbe& probe : record.probes) {
-      for (const ParsedBlock& block : probe.blocks) {
-        seqs.push_back(block.seq);
-      }
-    }
-  }
-  std::sort(seqs.begin(), seqs.end());
-  ASSERT_EQ(1u, seqs.front());
-  for (size_t i = 1; i < seqs.size(); i++) {
-    ASSERT_EQ(seqs[i - 1] + 1, seqs[i]) << "gap or repeat at index " << i;
-  }
+  // Every sequence number the trace hands out, records and blocks alike.
+  AssertSeqsDense(trace.gets);
 
   // Records appear in the file in sequence order.
   for (size_t i = 1; i < trace.gets.size(); i++) {
@@ -1121,6 +1338,7 @@ TEST_F(KeyLookupTraceDBTest, RecordSeqPrecedesItsBlockSeqs) {
   ParsedRecord record = TraceOneGet("k");
   ASSERT_FALSE(record.probes.empty());
   bool saw_block = false;
+  bool saw_index_block = false;
   for (const ParsedProbe& probe : record.probes) {
     for (const ParsedBlock& block : probe.blocks) {
       // The record's seq is taken at lookup start, so sorting by seq puts the
@@ -1128,8 +1346,13 @@ TEST_F(KeyLookupTraceDBTest, RecordSeqPrecedesItsBlockSeqs) {
       ASSERT_LT(record.seq, block.seq);
       saw_block = true;
     }
+    for (const ParsedBlock& block : probe.index_blocks) {
+      ASSERT_LT(record.seq, block.seq);
+      saw_index_block = true;
+    }
   }
   ASSERT_TRUE(saw_block);
+  ASSERT_TRUE(saw_index_block);
 }
 
 TEST_F(KeyLookupTraceDBTest, LookupReadingNoBlocksStillGetsSeq) {
@@ -1145,6 +1368,7 @@ TEST_F(KeyLookupTraceDBTest, LookupReadingNoBlocksStillGetsSeq) {
   ParsedRecord record = TraceOneGet("k");
   ASSERT_EQ(1u, record.probes.size());
   ASSERT_TRUE(record.probes[0].blocks.empty());
+  ASSERT_TRUE(record.probes[0].index_blocks.empty());
   // The lookup still occupies a position in the trace-wide order, which is
   // what makes filter effectiveness measurable.
   ASSERT_GT(record.seq, 0u);

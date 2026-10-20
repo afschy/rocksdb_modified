@@ -43,6 +43,16 @@ const char* BlockIdModeName(KeyLookupBlockIdMode mode) {
   return "unknown";
 }
 
+char BlockTypeChar(KeyLookupBlockType type) {
+  switch (type) {
+    case KeyLookupBlockType::kData:
+      return 'd';
+    case KeyLookupBlockType::kIndex:
+      return 'i';
+  }
+  return '?';
+}
+
 const char* FileOpName(KeyLookupFileOp op) {
   switch (op) {
     case KeyLookupFileOp::kCreate:
@@ -120,7 +130,7 @@ Status KeyLookupTraceWriter::NewWritableFile(
   }
 
   line_buffer_.clear();
-  line_buffer_.append("# rocksdb_key_lookup_trace v4 block_id_mode=");
+  line_buffer_.append("# rocksdb_key_lookup_trace v5 block_id_mode=");
   line_buffer_.append(BlockIdModeName(trace_options.block_id_mode));
   line_buffer_.append(" size_unit=bytes rocksdb=");
   AppendNumberTo(&line_buffer_, ROCKSDB_MAJOR);
@@ -213,6 +223,8 @@ Status KeyLookupTraceWriter::AppendLine(uint64_t max_trace_file_size) {
 }
 
 void KeyLookupTraceWriter::AppendBlock(const KeyLookupBlockAccess& block) {
+  line_buffer_.push_back(BlockTypeChar(block.type));
+  line_buffer_.push_back('/');
   AppendNumberTo(&line_buffer_, block.block_id);
   line_buffer_.push_back('/');
   AppendNumberTo(&line_buffer_, block.seq);

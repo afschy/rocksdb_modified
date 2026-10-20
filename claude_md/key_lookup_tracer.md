@@ -4,7 +4,7 @@ A tracing subsystem for offline LSM block cache analysis and simulation. It
 records three things:
 
 - for every point `Get()`, the ordered sequence of SST files searched, what each
-  contributed, and the data blocks read from each;
+  contributed, and the index and data blocks read from each;
 - every data block read by a table iterator, which covers user scans,
   compaction, ingestion, and verification;
 - every change to the live file set, including trivial moves.
@@ -31,10 +31,10 @@ type field. All three are interleaved in one file and totally ordered by a
 trace-wide sequence number.
 
 ```
-# rocksdb_key_lookup_trace v4 block_id_mode=ordinal size_unit=bytes rocksdb=11.9
+# rocksdb_key_lookup_trace v5 block_id_mode=ordinal size_unit=bytes rocksdb=11.9
 F,1,1755212345678000,create,0,1201,5000,4194304,0,user00001,user04999
-G,7,1755212345678901,42,0,1,3,0:1201:0|1:1150:0:4/8/4101/8192:5/9/4101/8192|2:1043:1:12/10/2048/4096
-A,11,1755212345679500,0,10,3,2,1043,1,2,0/12/4101/8192:1/13/4101/8192
+G,7,1755212345678901,42,0,1,3,0:1201:0|1:1150:0:i/0/8/1205/2410:d/4/9/4101/8192:d/5/10/4101/8192|2:1043:1:i/0/11/990/1980:d/12/12/2048/4096
+A,13,1755212345679500,0,10,3,2,1043,1,2,d/0/14/4101/8192:d/1/15/4101/8192
 ```
 
 The header names the format version, how block ids are encoded, the unit for
@@ -50,15 +50,22 @@ marker, described in 1.6.
 G,seq,timestamp_us,lookup_id,cf_id,final_result,num_probes,<probe>|<probe>|...
 
 probe := level:file_number:outcome[:block[:block...]]
-block := block_id/seq/read_bytes/uncomp_bytes
+block := type/block_id/seq/read_bytes/uncomp_bytes
 ```
 
 The example above reads as: lookup 42 on column family 0 searched three files,
-in this order -- L0 file 1201 (no data blocks read, so the filter excluded it),
-L1 file 1150 (read blocks 4 and 5, key not present), then L2 file 1043 (read
-block 12, found the value). The request overall returned a value.
+in this order -- L0 file 1201 (no blocks read, so the filter excluded it), L1
+file 1150 (read its index block, then data blocks 4 and 5, key not present),
+then L2 file 1043 (index block, then data block 12, found the value). The
+request overall returned a value.
 
-"Block 4" means the 4th data block of that file in offset order, zero-based.
+`type` is `d` for a data block and `i` for an index block. A probe lists its
+blocks in access order, so the index blocks that located a data block come
+before it. A single-level index adds one `i` block per probe; a partitioned
+index adds its top-level block, then each partition read.
+
+"d/4" means the 4th data block of that file in offset order, zero-based. Index
+blocks are numbered separately; see 1.6.
 
 A probe with no blocks has exactly three colon-separated fields and no trailing
 colon. When `num_probes` is 0 the probe list is empty and the line ends with a
@@ -104,7 +111,7 @@ several records sharing an `iter_id`: group by `iter_id` to reassemble the
 scan, and use it to tell two concurrent scans over the same file apart.
 
 The block tuple is byte-identical to the one in `G` records, so one parser
-handles both.
+handles both. Its `type` is always `d`: iterators record no index blocks.
 
 ### 1.3 Field reference
 
@@ -153,6 +160,7 @@ Block tuple:
 
 | Field | Meaning |
 |---|---|
+| `type` | `d` data block, `i` index block |
 | `block_id` | Ordinal or raw offset per `block_id_mode`; `18446744073709551615` when unresolvable |
 | `seq` | Position of this block access in the trace-wide order |
 | `read_bytes` | Bytes read from disk, including the 5-byte block trailer -- i.e. the *compressed* size |
@@ -256,6 +264,15 @@ not in it, or the read was made with `read_tier == kBlockCacheTier` before the
 map existed -- the block id is `UINT64_MAX`. The explicit sentinel is
 deliberate: a plausible but wrong ordinal would be worse.
 
+**Index block ids.** Index blocks have their own ordinal space: a block's
+zero-based position among the file's index blocks in offset order. A
+single-level index is one block, always `i/0`. A partitioned index with `P`
+partitions numbers them `0..P-1` in key order, and its top-level block, written
+after them, is `P` -- so the top-level ordinal equals the `index_partitions`
+table property. In `kOffset` mode an index block's id is its raw offset, as for
+data blocks. The partition map is built from the top-level block the lookup has
+already fetched, so unlike the data block map it costs no I/O.
+
 **Truncation.** On reaching `max_trace_file_size` the writer appends a single
 `# truncated` line and stops for good, so a reader can tell truncation from a
 clean end. With compression on the limit counts *compressed* bytes and is
@@ -325,8 +342,10 @@ def open_trace(path):
     return open(path, newline="\n", errors="surrogateescape")
 
 def parse_block(s):
-    block_id, seq, read_bytes, uncomp_bytes = (int(x) for x in s.split("/"))
-    return block_id, seq, read_bytes, uncomp_bytes
+    block_type, block_id, seq, read_bytes, uncomp_bytes = s.split("/")
+    # Key a cache model on (file_number, block_type, block_id): the two
+    # types number their blocks independently.
+    return block_type, int(block_id), int(seq), int(read_bytes), int(uncomp_bytes)
 
 for line in open_trace(path):
     line = line.rstrip("\n")
@@ -366,6 +385,7 @@ On a trace that was not truncated:
   sorting by sequence number yields causal order.
 - `num_probes` equals the number of `|`-separated probes; `num_blocks` equals
   the number of `:`-separated blocks.
+- Within one probe, block `seq`s strictly increase.
 - Levels within one `G` record are non-decreasing -- files are searched in LSM
   order.
 - Every `file_number` in a `G` or `A` record has a preceding `create`. It may
@@ -378,6 +398,20 @@ On a trace that was not truncated:
 **"No blocks read" does not mean "the filter said no."** A row cache hit is
 served inside `TableCache::Get` without ever reaching `BlockBasedTable::Get`,
 so it also records zero blocks. The `outcome` field is what distinguishes them.
+
+**An `i` block is recorded even when no cache was involved.** With
+`cache_index_and_filter_blocks = false`, or with top-level or partition pinning,
+the table reader holds the index block and never touches the block cache for
+it. The access is recorded anyway, with the same id and sizes, because what is
+held where is cache policy, and modeling that is the simulator's job. To
+replay a configuration that holds index blocks outside the cache, filter out
+`i` blocks rather than expecting them to be absent.
+
+**A partitioned-index probe can list two partitions.** If `BlockBasedTable::Get`
+moves past the last data block of a partition, which happens when the key's
+versions span data blocks or the key sorts after every entry of the block the
+index pointed to, the next partition is loaded and recorded. A lookup that
+finds its key in the first data block does not do this.
 
 **"Files searched" is not exactly "files whose bloom filter ran."** Three cases
 search a file with no filter check: `optimize_filters_for_hits` skipping the
@@ -484,7 +518,10 @@ this matters for your analysis, a sixth `final_result` value is the fix.
   *silently wrong* traces, missing exactly the filter-negative probes, which is
   worse than no support.
 - **Memtables**, per above.
-- **Index and filter blocks.** Only data blocks are recorded.
+- **Filter blocks**, and **index blocks read by iterators**. `G` probes carry
+  index and data blocks; `A` records carry data blocks only.
+- **User-defined indexes.** A lookup served by a UDI through
+  `UserDefinedIndexReaderWrapper` records no `i` block.
 - **Non-block-based table formats.** Probes are still recorded; block ids are
   not, because the sink is only consulted in `BlockBasedTable::Get`.
 - **Recovery and repair.** `db/repair.cc`, `db/version_util.h`, and
@@ -496,15 +533,17 @@ this matters for your analysis, a sixth `final_result` value is the fix.
 
 With tracing **off**, the cost is one relaxed atomic load plus a predictable
 branch in `Version::Get`, one null check per data block access in
-`BlockBasedTable::Get` and in `BlockBasedTableIterator::InitDataBlock`, three
-pointers added to `GetContext`, a pointer plus a buffer added to each table
+`BlockBasedTable::Get` and in `BlockBasedTableIterator::InitDataBlock`, one per
+index block access, three pointers added to `GetContext`, a pointer plus a
+buffer added to each table iterator, a pointer added to each partitioned index
 iterator, and two empty `autovector`s on the stack per `Get`.
 
 With tracing **on**, there is one mutex acquisition per *record*: per `Get`, per
 file lifecycle event, and per 1024 blocks an iterator reads. Each record is
 assembled in a reused buffer and written once. The ordinal map is built at most
 once per table per trace session, at 8 bytes per data block -- a 256 MB SST at
-4 KB blocks is ~64K blocks, about 512 KB.
+4 KB blocks is ~64K blocks, about 512 KB. A partitioned index adds a second map
+at 8 bytes per partition.
 
 With compression on, one thread in every 256 KB of output also compresses that
 batch while holding the writer lock, a few hundred microseconds at level 1.
@@ -909,9 +948,55 @@ The three headers added since -- `key_lookup_block_access.h`,
 `key_lookup_trace_scope.h`, and the public options header -- need no build
 entries; only `.cc` files are listed.
 
-### 2.13 Tests
+### 2.13 Index block capture
 
-**`trace_replay/key_lookup_tracer_test.cc`** (new) -- 43 tests in three
+Index blocks share the per-lookup buffer with data blocks.
+`KeyLookupBlockAccess` gains a leading `KeyLookupBlockType` (24 to 32 bytes),
+and `AppendBlock()` writes it as the tuple's first field, which is why `A`
+records carry it too.
+
+There are three read sites, each reached with the lookup's `GetContext` only
+from `BlockBasedTable::Get`:
+
+| Site | Reads |
+|---|---|
+| `IndexReaderCommon::GetOrReadIndexBlock` (`index_reader_common.cc`) | A single-level index block, or a partitioned index's top-level block. Shared by the binary search, hash, and partitioned readers |
+| `PartitionedIndexIterator::InitPartitionedIndexBlock` | A partition read through the block cache or the file |
+| `BlockBasedTable::PartitionedIndexIteratorState::NewSecondaryIterator` | A partition pinned in `PartitionIndexReader::partition_map_` |
+
+Like the data block hook, each records before the fetch and fills in
+`uncomp_bytes` after. Each records even when the reader already holds the
+block, because which blocks are held outside the cache is cache policy.
+
+`GetContext` reaches the two partition sites through new constructor
+parameters on `PartitionedIndexIterator` and `PartitionedIndexIteratorState`,
+null on every other path. They still pass a null `GetContext` to
+`NewDataBlockIterator`; the pointer is used only for the sink.
+`BlockBasedTable::TraceIndexBlockAccess()` builds the entry, and the null
+checks stay inline at each site so that tracing off costs one branch.
+
+> `PartitionedIndexIterator` reuses one `block_iter_` across partitions, and
+> `BlockIter::Invalidate()` does not reset the block size. The hook therefore
+> reads `block_size()` only after a successful fetch; otherwise a failed fetch
+> would report the previous partition's size.
+
+**Ids.** `IndexBlockIdForTrace()` returns the offset in `kOffset` mode, 0 for a
+single-level index, and otherwise a binary search in `Rep::index_block_offsets`:
+the partition offsets followed by the top-level offset. The builder writes
+partitions in key order and the top-level block after them, which is asserted
+in debug builds. `EnsureIndexBlockOffsetsBuilt()` builds the map by walking the
+top-level block that `GetOrReadIndexBlock` has just fetched, so it does no I/O.
+It is published the same way as the data block map, with its own mutex and
+state.
+
+The first traced access to a partitioned table has no map yet when it records
+the top-level block, so it resolves that id after the fetch, once the map
+exists. Partitions are always read after the top-level block, so they always
+find the map ready.
+
+### 2.14 Tests
+
+**`trace_replay/key_lookup_tracer_test.cc`** (new) -- 47 tests in four
 fixtures.
 
 Shared helpers keep the cases from duplicating setup: `SplitOn`,
@@ -920,12 +1005,15 @@ Shared helpers keep the cases from duplicating setup: `SplitOn`,
 the fixtures `FlushToLevel`, `FlushSpanningFile` (writes one file spanning
 "a".."z" with a caller-supplied middle write), `TraceOneGet`,
 `EndTraceAndParse`, `EndTraceAndParseAll`, `BlockIdFor`, `BlockAccessFor`, and
-`FileNumbersAtLevel`.
+`FileNumbersAtLevel`. `AssertSeqsDense` checks the `1..N` sequence invariant.
+The parser splits each probe's blocks into `blocks` (data) and `index_blocks`,
+each in trace order.
 
 **`KeyLookupTracerTest`** -- format level, no DB. Exact line assertions for all
 three record types, including that a zero-probe `G` line ends with a comma,
 that a zero-block probe has exactly three colon-separated fields with no
-trailing colon, that `to_level` appears only on a `move`, that
+trailing colon, that index and data blocks share a probe's list in access
+order with a leading type field, that `to_level` appears only on a `move`, that
 `num_entries` and `file_size` sit between the file number and the level, and
 that `smallest_key` and `largest_key` end a `create` line, raw and possibly
 empty, and are left off `delete` and `move` even when passed. All
@@ -962,7 +1050,8 @@ deterministic LSM with `disable_auto_compactions`,
 `MoveFilesToLevel`.
 
 Point lookups: `FoundInBottomLevel`, `TombstoneStopsTheSearch`,
-`FilterNegativeProbesReadNoBlocks`, `MemtableHitIsNotTraced`,
+`FilterNegativeProbesReadNoBlocks` (no index block either),
+`MemtableHitIsNotTraced`,
 `NoCandidateFilesGivesZeroProbes` (which needs more than one non-empty level,
 because `FilePicker` skips its key-range check when there are few files),
 `RangeTombstoneStopsTheSearch`, `SamplingSkipsRequests`,
@@ -1005,6 +1094,24 @@ with block sequence numbers ordered across the boundary),
 suppress user iterators), `IteratorLiveAcrossEndTraceDoesNotCrash`, and
 `StaleIteratorDoesNotWriteIntoNextSession`.
 
+Index blocks: `SingleLevelIndexBlockRecordedPerProbe` checks one `i/0` block
+per probe, recorded before its data block with both sizes consistent. It runs
+with the reader holding the index and with the block cache serving it, over a
+miss and a hit, and requires the same record each time.
+`IndexBlockOffsetFollowsDataBlocks` checks the `kOffset` id lands after the
+data block.
+
+**`KeyLookupTracePartitionedIndexTest`** -- one L0 file with a partitioned
+index of 128-byte partitions. `TopLevelThenPartition` runs unpinned and with
+`partition_pinning = kAll`, and checks that each Get records the top-level
+block with ordinal equal to `index_partitions`, then one partition, then the
+data block. Partition ordinals must be ascending in key order and cover
+`0..P-1`, sequence numbers must be dense, and both configurations must produce
+identical ids and sizes. Block cache index ticker deltas guard the premise:
+zero when pinned, nonzero when not, so both partition sites really run.
+`Offsets` checks file order in `kOffset` mode: data block, then partition,
+then top-level block.
+
 **`KeyLookupTraceBlockIdTest`** -- builds one L0 file with 128-byte blocks and
 200 keys, then checks that the first key maps to ordinal 0, that ordinals are
 ascending and dense over the key range, that `kOffset` yields strictly
@@ -1029,14 +1136,15 @@ COERCE_CONTEXT_SWITCH=1 DISABLE_WARNING_AS_ERROR=1 AUTO_CLEAN=1 \
 
 | Check | Result |
 |---|---|
-| `key_lookup_tracer_test` | 43 tests, all passing |
+| `key_lookup_tracer_test` | 47 tests, all passing; 30x `--gtest_repeat` clean |
 | Same, 100x under `COERCE_CONTEXT_SWITCH=1` | 4200 runs, 0 failures (42-test suite) |
 | `db_bench --benchmarks=fillrandom,readrandom,seekrandom` with compression | 49947 `G`, 104604 `A`, 9427 `F` over 48.5 compressed batches; decodes to a complete trace |
 | Compressed vs plain trace of one workload | identical on every workload-determined field across all lookups |
 | 2,000,000-read traced run, all invariants checked | 1998923 `G` (1077 memtable hits), 7455 `A`, 15067 `F`; 5,789,503 sequence numbers dense with no gaps or repeats |
 | 300,000-seek traced run, all invariants checked | 749249 `A`, 299649 `G`, 5110 `F`; 3,093,877 sequence numbers dense; `no_insert` matches caller on every record; 0 failures |
 | `version_set_test` | 212 passing |
-| `table_test` | 6952 passing |
+| `table_test` | 6952 passing (also after index block capture) |
+| `block_based_table_reader_test`, `db_block_cache_test`, `partitioned_filter_block_test` | 9636, 81, 210 passing, after index block capture |
 | `db_basic_test` | 285 passing (normal build) |
 | `c_test` | passing, after `regen_all.py` |
 | `verify_generated_up_to_date.py` | generated C API is current |
@@ -1046,6 +1154,8 @@ COERCE_CONTEXT_SWITCH=1 DISABLE_WARNING_AS_ERROR=1 AUTO_CLEAN=1 \
 ### What has not been run
 
 - A full `make check`.
+- Any `db_bench` run with index block capture, and the `COERCE_CONTEXT_SWITCH=1`
+  sweep since it was added.
 - The `COERCE_CONTEXT_SWITCH=1` flakiness sweep **since
   `ZstdCompressionSpansMultipleBatches` was added**. The 4200-run figure above
   predates it, and that test is the slowest in the suite.

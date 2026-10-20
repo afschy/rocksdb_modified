@@ -68,8 +68,8 @@ InternalIteratorBase<IndexValue>* PartitionIndexReader::NewIterator(
     // We don't return pinned data from index blocks, so no need
     // to set `block_contents_pinned`.
     it = NewTwoLevelIterator(
-        new BlockBasedTable::PartitionedIndexIteratorState(table(),
-                                                           &partition_map_),
+        new BlockBasedTable::PartitionedIndexIteratorState(
+            table(), &partition_map_, get_context),
         index_block.GetValue()->NewIndexIterator(
             internal_comparator()->user_comparator(),
             rep->get_global_seqno(BlockType::kIndex), nullptr, kNullStats, true,
@@ -95,7 +95,8 @@ InternalIteratorBase<IndexValue>* PartitionIndexReader::NewIterator(
     it = new PartitionedIndexIterator(
         table(), ro, *internal_comparator(), std::move(index_iter),
         lookup_context ? lookup_context->caller
-                       : TableReaderCaller::kUncategorized);
+                       : TableReaderCaller::kUncategorized,
+        /*compaction_readahead_size=*/0, get_context);
   }
 
   assert(it != nullptr);

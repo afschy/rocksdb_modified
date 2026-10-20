@@ -8,7 +8,10 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include "table/block_based/index_reader_common.h"
 
+#include <limits>
+
 #include "block_cache.h"
+#include "table/get_context.h"
 
 namespace ROCKSDB_NAMESPACE {
 Status BlockBasedTable::IndexReaderCommon::ReadIndexBlock(
@@ -39,14 +42,38 @@ Status BlockBasedTable::IndexReaderCommon::GetOrReadIndexBlock(
     CachableEntry<Block>* index_block, const ReadOptions& ro) const {
   assert(index_block != nullptr);
 
-  if (!index_block_.IsEmpty()) {
-    index_block->SetUnownedValue(index_block_.GetValue());
-    return Status::OK();
+  // Key lookup tracing: recorded before the fetch, and whether or not this
+  // reader already holds the block, so the trace is independent of caching.
+  KeyLookupBlockAccesses* const klt_sink =
+      get_context != nullptr ? get_context->block_sink() : nullptr;
+  if (UNLIKELY(klt_sink != nullptr)) {
+    table_->TraceIndexBlockAccess(*get_context,
+                                  table_->get_rep()->index_handle);
   }
 
-  return ReadIndexBlock(table_, /*prefetch_buffer=*/nullptr, ro,
-                        cache_index_blocks(), get_context, lookup_context,
-                        index_block);
+  Status s;
+  if (!index_block_.IsEmpty()) {
+    index_block->SetUnownedValue(index_block_.GetValue());
+  } else {
+    s = ReadIndexBlock(table_, /*prefetch_buffer=*/nullptr, ro,
+                       cache_index_blocks(), get_context, lookup_context,
+                       index_block);
+  }
+
+  Block* const block = index_block->GetValue();
+  if (UNLIKELY(klt_sink != nullptr) && s.ok() && block != nullptr) {
+    KeyLookupBlockAccess& access = klt_sink->back();
+    access.uncomp_bytes = static_cast<uint32_t>(block->size());
+    // Partition ordinals come from walking this block, so the first traced
+    // access to a partitioned index can only resolve its id now.
+    if (access.block_id == std::numeric_limits<uint64_t>::max()) {
+      table_->EnsureIndexBlockOffsetsBuilt(block);
+      access.block_id =
+          table_->IndexBlockIdForTrace(table_->get_rep()->index_handle.offset(),
+                                       get_context->block_id_mode());
+    }
+  }
+  return s;
 }
 
 void BlockBasedTable::IndexReaderCommon::EraseFromCacheBeforeDestruction(

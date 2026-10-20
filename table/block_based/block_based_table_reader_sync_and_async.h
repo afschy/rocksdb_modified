@@ -601,7 +601,8 @@ DEFINE_SYNC_AND_ASYNC(Status, BlockBasedTable::Get)
       // materializes on both a cache hit and a miss.
       if (UNLIKELY(get_context->block_sink() != nullptr)) {
         get_context->block_sink()->push_back(
-            {BlockIdForTrace(read_options, v.handle.offset(),
+            {KeyLookupBlockType::kData,
+             BlockIdForTrace(read_options, v.handle.offset(),
                              get_context->block_id_mode()),
              get_context->key_lookup_tracer()->NextSeq(),
              static_cast<uint32_t>(v.handle.size() + kBlockTrailerSize),

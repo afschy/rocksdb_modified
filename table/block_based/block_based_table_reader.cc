@@ -2239,6 +2239,83 @@ uint64_t BlockBasedTable::BlockIdForTrace(const ReadOptions& read_options,
   return static_cast<uint64_t>(it - offsets.begin());
 }
 
+void BlockBasedTable::EnsureIndexBlockOffsetsBuilt(
+    Block* top_level_index) const {
+  if (rep_->index_type != BlockBasedTableOptions::kTwoLevelIndexSearch ||
+      rep_->index_offset_map_state.load(std::memory_order_acquire) !=
+          Rep::OffsetMapState::kUnbuilt) {
+    return;
+  }
+  // Same iterator settings as PartitionIndexReader uses for this block.
+  IndexBlockIter biter;
+  top_level_index->NewIndexIterator(
+      rep_->internal_comparator.user_comparator(),
+      rep_->get_global_seqno(BlockType::kIndex), &biter,
+      /*stats=*/nullptr, /*total_order_seek=*/true, rep_->index_has_first_key,
+      rep_->index_key_includes_seq, rep_->index_value_is_full,
+      /*block_contents_pinned=*/false, rep_->user_defined_timestamps_persisted);
+
+  std::vector<uint64_t> offsets;
+  for (biter.SeekToFirst(); biter.Valid(); biter.Next()) {
+    const uint64_t partition_offset = biter.value().handle.offset();
+    // Partitions are written in key order, so no sort is needed.
+    assert(offsets.empty() || offsets.back() < partition_offset);
+    offsets.push_back(partition_offset);
+  }
+  // The top-level block is written after every partition.
+  assert(offsets.empty() || offsets.back() < rep_->index_handle.offset());
+  offsets.push_back(rep_->index_handle.offset());
+  const bool ok = biter.status().ok();
+
+  std::lock_guard<std::mutex> lock(rep_->index_block_offsets_mutex);
+  if (rep_->index_offset_map_state.load(std::memory_order_relaxed) !=
+      Rep::OffsetMapState::kUnbuilt) {
+    return;
+  }
+  if (ok) {
+    rep_->index_block_offsets = std::move(offsets);
+    rep_->index_offset_map_state.store(Rep::OffsetMapState::kReady,
+                                       std::memory_order_release);
+  } else {
+    rep_->index_offset_map_state.store(Rep::OffsetMapState::kFailed,
+                                       std::memory_order_release);
+  }
+}
+
+uint64_t BlockBasedTable::IndexBlockIdForTrace(
+    uint64_t offset, KeyLookupBlockIdMode mode) const {
+  if (mode == KeyLookupBlockIdMode::kOffset) {
+    return offset;
+  }
+  if (rep_->index_type != BlockBasedTableOptions::kTwoLevelIndexSearch) {
+    return offset == rep_->index_handle.offset()
+               ? 0
+               : std::numeric_limits<uint64_t>::max();
+  }
+  if (rep_->index_offset_map_state.load(std::memory_order_acquire) !=
+      Rep::OffsetMapState::kReady) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  // Safe without the mutex: index_block_offsets is immutable once kReady.
+  const auto& offsets = rep_->index_block_offsets;
+  auto it = std::lower_bound(offsets.begin(), offsets.end(), offset);
+  if (it == offsets.end() || *it != offset) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(it - offsets.begin());
+}
+
+void BlockBasedTable::TraceIndexBlockAccess(const GetContext& get_context,
+                                            const BlockHandle& handle) const {
+  assert(get_context.block_sink() != nullptr);
+  get_context.block_sink()->push_back(
+      {KeyLookupBlockType::kIndex,
+       IndexBlockIdForTrace(handle.offset(), get_context.block_id_mode()),
+       get_context.key_lookup_tracer()->NextSeq(),
+       static_cast<uint32_t>(handle.size() + kBlockTrailerSize),
+       /*uncomp_bytes=*/0});
+}
+
 // TODO?
 template <>
 DataBlockIter* BlockBasedTable::InitBlockIterator<DataBlockIter>(
@@ -2591,12 +2668,19 @@ void BlockBasedTable::FinishTraceRecord(
 
 BlockBasedTable::PartitionedIndexIteratorState::PartitionedIndexIteratorState(
     const BlockBasedTable* table,
-    UnorderedMap<uint64_t, CachableEntry<Block>>* block_map)
-    : table_(table), block_map_(block_map) {}
+    UnorderedMap<uint64_t, CachableEntry<Block>>* block_map,
+    GetContext* get_context)
+    : table_(table), block_map_(block_map), get_context_(get_context) {}
 
 InternalIteratorBase<IndexValue>*
 BlockBasedTable::PartitionedIndexIteratorState::NewSecondaryIterator(
     const BlockHandle& handle) {
+  // Key lookup tracing: a pinned partition is still an access.
+  KeyLookupBlockAccesses* const klt_sink =
+      get_context_ != nullptr ? get_context_->block_sink() : nullptr;
+  if (UNLIKELY(klt_sink != nullptr)) {
+    table_->TraceIndexBlockAccess(*get_context_, handle);
+  }
   // Return a block iterator on the index partition
   auto block = block_map_->find(handle.offset());
   // block_map_ must be exhaustive
@@ -2607,6 +2691,10 @@ BlockBasedTable::PartitionedIndexIteratorState::NewSecondaryIterator(
   }
   const Rep* rep = table_->get_rep();
   assert(rep);
+  if (UNLIKELY(klt_sink != nullptr)) {
+    klt_sink->back().uncomp_bytes =
+        static_cast<uint32_t>(block->second.GetValue()->size());
+  }
 
   Statistics* kNullStats = nullptr;
   // We don't return pinned data from index blocks, so no need

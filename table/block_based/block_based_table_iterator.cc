@@ -18,7 +18,8 @@ void BlockBasedTableIterator::TraceBlockAccess(const BlockHandle& handle) {
   // here, before any cache is consulted, is what keeps the trace independent
   // of cache state.
   klt_blocks_.push_back(
-      {table_->BlockIdForTrace(read_options_, handle.offset(),
+      {KeyLookupBlockType::kData,
+       table_->BlockIdForTrace(read_options_, handle.offset(),
                                klt_->options().block_id_mode),
        klt_->NextSeq(),
        static_cast<uint32_t>(handle.size() +

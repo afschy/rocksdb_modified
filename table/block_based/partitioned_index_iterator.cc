@@ -8,6 +8,8 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include "table/block_based/partitioned_index_iterator.h"
 
+#include "table/get_context.h"
+
 namespace ROCKSDB_NAMESPACE {
 void PartitionedIndexIterator::Seek(const Slice& target) { SeekImpl(&target); }
 
@@ -93,6 +95,12 @@ void PartitionedIndexIterator::InitPartitionedIndexBlock() {
         rep, partitioned_index_handle, read_options_.readahead_size,
         is_for_compaction, /*no_sequential_checking=*/false, read_options_,
         /*readaheadsize_cb=*/nullptr, /*is_async_io_prefetch=*/false);
+    // Key lookup tracing: record before the partition is fetched.
+    KeyLookupBlockAccesses* const klt_sink =
+        get_context_ != nullptr ? get_context_->block_sink() : nullptr;
+    if (UNLIKELY(klt_sink != nullptr)) {
+      table_->TraceIndexBlockAccess(*get_context_, partitioned_index_handle);
+    }
     Status s;
     table_->NewDataBlockIterator<IndexBlockIter>(
         read_options_, partitioned_index_handle, &block_iter_,
@@ -101,6 +109,10 @@ void PartitionedIndexIterator::InitPartitionedIndexBlock() {
         block_prefetcher_.prefetch_buffer(),
         /*for_compaction=*/is_for_compaction, /*async_read=*/false, s,
         /*use_block_cache_for_lookup=*/true);
+    // block_iter_ is reused, so its size is stale unless this fetch succeeded.
+    if (UNLIKELY(klt_sink != nullptr) && block_iter_.status().ok()) {
+      klt_sink->back().uncomp_bytes = block_iter_.block_size();
+    }
     block_iter_points_to_real_block_ = true;
     // We could check upper bound here but it is complicated to reason about
     // upper bound in index iterator. On the other than, in large scans, index

@@ -511,6 +511,17 @@ class BlockBasedTable : public TableReader, public SameFileBlobReader {
   uint64_t BlockIdForTrace(const ReadOptions& read_options, uint64_t offset,
                            KeyLookupBlockIdMode mode) const;
 
+  // Index block counterpart of BlockIdForTrace(). kOrdinal numbers index
+  // blocks in offset order: partitions first, then the top-level block, so a
+  // single-level index is 0. Does no I/O; UINT64_MAX until the map is built.
+  uint64_t IndexBlockIdForTrace(uint64_t offset,
+                                KeyLookupBlockIdMode mode) const;
+
+  // Appends an index block access to `get_context`'s key lookup trace sink,
+  // which must be set. The caller fills in uncomp_bytes on back().
+  void TraceIndexBlockAccess(const GetContext& get_context,
+                             const BlockHandle& handle) const;
+
   // input_iter: if it is not null, update this one and return it as Iterator
   DECLARE_SYNC_AND_ASYNC_TEMPLATE_CONST(
       template <typename TBlockIter>, TBlockIter*, NewDataBlockIterator,
@@ -628,6 +639,10 @@ class BlockBasedTable : public TableReader, public SameFileBlobReader {
 
   // Builds rep_->data_block_offsets if it is not built yet. Performs I/O.
   void EnsureDataBlockOffsetsBuilt(const ReadOptions& read_options) const;
+
+  // Builds rep_->index_block_offsets from a partitioned index's top-level
+  // block, if not built yet. No I/O. A no-op for a single-level index.
+  void EnsureIndexBlockOffsetsBuilt(Block* top_level_index) const;
 
   template <typename TBlocklike>
   Cache::Priority GetCachePriority() const;
@@ -784,9 +799,12 @@ class BlockBasedTable : public TableReader, public SameFileBlobReader {
 class BlockBasedTable::PartitionedIndexIteratorState
     : public TwoLevelIteratorState {
  public:
+  // `get_context` is non-null only on the point lookup path, where it carries
+  // the key lookup trace sink.
   PartitionedIndexIteratorState(
       const BlockBasedTable* table,
-      UnorderedMap<uint64_t, CachableEntry<Block>>* block_map);
+      UnorderedMap<uint64_t, CachableEntry<Block>>* block_map,
+      GetContext* get_context);
   InternalIteratorBase<IndexValue>* NewSecondaryIterator(
       const BlockHandle& index_value) override;
 
@@ -794,6 +812,7 @@ class BlockBasedTable::PartitionedIndexIteratorState
   // Don't own table_
   const BlockBasedTable* table_;
   UnorderedMap<uint64_t, CachableEntry<Block>>* block_map_;
+  GetContext* const get_context_;
 };
 
 // Stores all the properties associated with a BlockBasedTable.
@@ -1018,6 +1037,13 @@ struct BlockBasedTable::Rep {
   mutable std::mutex data_block_offsets_mutex;
   mutable std::vector<uint64_t> data_block_offsets;
   mutable std::atomic<OffsetMapState> offset_map_state{
+      OffsetMapState::kUnbuilt};
+
+  // Offsets of a partitioned index's partitions plus its top-level block,
+  // sorted ascending. Built and published the same way as the above.
+  mutable std::mutex index_block_offsets_mutex;
+  mutable std::vector<uint64_t> index_block_offsets;
+  mutable std::atomic<OffsetMapState> index_offset_map_state{
       OffsetMapState::kUnbuilt};
 };
 

@@ -19,12 +19,15 @@ namespace ROCKSDB_NAMESPACE {
 class PartitionedIndexIterator : public InternalIteratorBase<IndexValue> {
   // compaction_readahead_size: its value will only be used if for_compaction =
   // true
+  // get_context: non-null only on the point lookup path, where it carries the
+  // key lookup trace sink
  public:
   PartitionedIndexIterator(
       const BlockBasedTable* table, const ReadOptions& read_options,
       const InternalKeyComparator& icomp,
       std::unique_ptr<InternalIteratorBase<IndexValue>>&& index_iter,
-      TableReaderCaller caller, size_t compaction_readahead_size = 0)
+      TableReaderCaller caller, size_t compaction_readahead_size = 0,
+      GetContext* get_context = nullptr)
       : index_iter_(std::move(index_iter)),
         table_(table),
         read_options_(read_options),
@@ -36,7 +39,8 @@ class PartitionedIndexIterator : public InternalIteratorBase<IndexValue> {
         lookup_context_(caller),
         block_prefetcher_(
             compaction_readahead_size,
-            table_->get_rep()->table_options.initial_auto_readahead_size) {
+            table_->get_rep()->table_options.initial_auto_readahead_size),
+        get_context_(get_context) {
   }
 
   ~PartitionedIndexIterator() override {}
@@ -145,6 +149,8 @@ class PartitionedIndexIterator : public InternalIteratorBase<IndexValue> {
   uint64_t prev_block_offset_ = std::numeric_limits<uint64_t>::max();
   BlockCacheLookupContext lookup_context_;
   BlockPrefetcher block_prefetcher_;
+  // Used only for key lookup tracing; partitions are read without it.
+  GetContext* const get_context_;
 
   // If `target` is null, seek to first.
   void SeekImpl(const Slice* target);

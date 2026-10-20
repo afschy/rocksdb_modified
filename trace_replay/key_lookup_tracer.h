@@ -56,9 +56,9 @@ enum class KeyLookupFileOp : uint8_t {
   kMove = 2,
 };
 
-// One SST file searched by a point lookup. The data blocks read from the file
-// live in a separate flat buffer owned by the caller; this records the range
-// [first_block_idx, first_block_idx + num_blocks) within it.
+// One SST file searched by a point lookup. The index and data blocks read from
+// the file live in a separate flat buffer owned by the caller; this records the
+// range [first_block_idx, first_block_idx + num_blocks) within it.
 struct KeyLookupProbe {
   uint32_t level = 0;
   uint64_t file_number = 0;
@@ -119,7 +119,8 @@ class KeyLookupTraceWriter {
                              uint64_t max_trace_file_size);
 
  private:
-  // Appends one block tuple: <block_id>/<seq>/<read_bytes>/<uncomp_bytes>.
+  // Appends one block tuple:
+  // <type>/<block_id>/<seq>/<read_bytes>/<uncomp_bytes>.
   void AppendBlock(const KeyLookupBlockAccess& block);
   // Routes line_buffer_ to the file, honoring the size limit and compressing
   // when enabled. Once the limit is reached a final "# truncated" line is
@@ -232,7 +233,7 @@ class KeyLookupTracer {
   static constexpr uint64_t kReservedLookupId = 0;
 
   // Records buffered per table iterator before a flush. Caps both the memory a
-  // live iterator holds (24 bytes per entry) and how much is lost on a crash.
+  // live iterator holds (32 bytes per entry) and how much is lost on a crash.
   static constexpr size_t kIterFlushThreshold = 1024;
 
  private:
